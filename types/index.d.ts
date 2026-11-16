@@ -34,7 +34,13 @@ export type St = {
   limits: { kind: string; pct: number; resetsAt: number }[]
   /** a conversa principal está no meio de um turno (do prompt.submit até o Stop) */
   busy: boolean
+  /** última falha de ferramenta da conversa principal (ms epoch); 0 = nenhuma. O widget toca a cena do inseto */
+  failAt: number
+  /** tipo do pedido em waiting+loud; o widget mostra o quadro em 'pergunta' e 'plano' */
+  askKind: AskKind
 }
+
+export type AskKind = '' | 'pergunta' | 'plano' | 'permissao' | 'aviso'
 
 declare module 'claude-code' {
   interface PluginState {

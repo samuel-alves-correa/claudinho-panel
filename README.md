@@ -20,6 +20,7 @@ claudinho-panel/
 ├─ types/index.d.ts             contrato do estado ($.state) do mod
 └─ widget/
    ├─ claudinho-widget.ps1      widget "sempre no topo" (PowerShell + WinForms/GDI+)
+   ├─ cenas.ps1                 vinhetas (inseto, quadro, plugue, pendurado) por cima das animações; ver docs/cenas.md
    └─ iniciar-widget.cmd        abre o widget sem janela de console
 (em %USERPROFILE%\.claude\claudinho\state\<sessionId>.json: estado de cada sessão, gerado fora do repositório)
 ```
@@ -118,6 +119,8 @@ Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fix
 | ✅ Terminou | pulinho, anel verde (o verde fica até você passar o mouse) |
 | ❌ Erro | treme com olhos em X, anel vermelho (só quando o turno termina com erro) |
 | Fechado | parado, olhos fechados, sem animação (nenhuma sessão viva) |
+
+**Cenas** (`widget/cenas.ps1`, detalhes em `docs/cenas.md`): ferramenta falhou → uma joaninha entra e leva um tapa; pergunta ou plano esperando você → quadro com "?" ao lado; turno terminou → plugue encaixa; arrastar o widget → fica pendurado e quica ao soltar; parado em Ocioso/Sua vez → uma delas a cada 40–80 s. `CW_CENAS=0` desliga; `CW_CENA=<nome>` repete uma em laço.
 
 Campos do JSON por estado: `name` (nome completo, título do balão), `short` (nome curto sob o mascote, cabe em ~64 px) e `labelShort` (label curto: alvo da ferramenta, como `claudinho-state.json`, ou o próprio label).
 

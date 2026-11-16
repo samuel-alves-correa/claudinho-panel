@@ -7,6 +7,7 @@
 #   Depuracao: CW_PIN=mascot|limits|ctx|sub inicia com o balao daquele item fixado; CW_TOP=<px> forca a posicao vertical;
 #   CW_COMPACT=0|1 forca expandido/reduzido; CW_NO_PID=1 nao grava nem apaga o arquivo .pid (testes com outro widget aberto);
 #   CW_CFG=<arquivo> usa outro arquivo de config (testes sem mexer na config do usuario).
+#   Cenas (cenas.ps1): CW_CENAS=0 desliga; CW_CENA=inseto|quadro|plugue repete uma cena em laco.
 param([string]$StateDir = (Join-Path $env:USERPROFILE '.claude\claudinho\state'))
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -331,6 +332,8 @@ function U($hex, $x, $y, $w, $h) {
   $b = $script:ubr[$hex]; if (-not $b) { $b = Br $hex; $script:ubr[$hex] = $b }
   $u = $script:mu; $script:mgx.FillRectangle($b, [single]($x * $u), [single]($y * $u), [single]($w * $u), [single]($h * $u))
 }
+# vinhetas por cima das animacoes de estado (inseto, quadro, plugue, pendurado): ver docs/cenas.md
+. (Join-Path $PSScriptRoot 'cenas.ps1')
 function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [double]$age, [double]$range) {
   $mode = [string]$v.mode; $loud = [bool]$v.loud
   $B = $v.B; $shade = $v.shade; $deep = $v.deep
@@ -340,6 +343,7 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
   $pose = 'front'; $eyes = 'open'; $eyY = (-14.0); $eyX = 0.0
   $armL = 0.0; $armR = 0.0   # deslocamento vertical dos bracos em pixels (negativo = sobe)
   $stk = ''; $mouth = $false
+  $lift = 0.0; $reachL = 0.0; $marker = $false; $tilt = $false   # so as cenas mexem nestes
   $prev = [string]$script:prevMode
 
   if ($mode -eq 'coding') {
@@ -373,11 +377,22 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
       'error' { $ox = 1.4 * $p * [math]::Sin($age * 38) * [math]::Max(0, 1 - $age / 0.9); $eyes = 'x' }
     }
   }
+  # cena ativa: a pose do quadro-chave substitui a do estado
+  $cq = $script:cq
+  if ($cq) {
+    $k = $cq.k
+    $pose = $k.pose; $eyes = $k.eyes; $eyX = $k.eyX; $eyY = $k.eyY; $armL = $k.armL; $armR = $k.armR
+    $ox = $k.ox * $u; $oy = $k.oy * $u; $sy = $k.sy; $wf = $k.wf; $stk = ''; $mouth = $false
+    $lift = $k.lift; $reachL = $k.reachL; $marker = $k.marker; $tilt = $k.tilt
+    if ($pose -eq 'squash' -or $pose -eq 'hang') { $pose = 'front' }
+  }
   if ($eyes -eq 'open' -and ($t % 3.7) -lt 0.13) { $eyes = 'closed' }
 
   $mx = $cx + $ox
   # sombra
   $shW = 26 * $u * (1 + $oy / (30 * $p)); $g.FillEllipse((Br '#000000' 70), [single]($mx - $shW / 2), [single]($gy - 0.4 * $p), [single]$shW, [single](2.4 * $p))
+
+  if ($cq) { $sp = $g.Save(); $g.TranslateTransform([single]$cx, [single]$gy); $g.SmoothingMode = 'None'; Cena-Props $cq 'atras' $t; $g.Restore($sp) }
 
   $st = $g.Save()
   $g.TranslateTransform([single]$mx, [single]($gy + $oy)); $g.ScaleTransform(1, [single]$sy)
@@ -386,7 +401,7 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
 
   # pernas (4, como no video); no agachado ficam mais curtas e com pezinho
   $lx = -8, -4, 2, 6
-  $legH = $(if ($pose -eq 'crouch') { 3.0 } else { 4.0 })
+  $legH = $(if ($pose -eq 'crouch') { 3.0 } else { 4.0 + $lift })   # lift < 0 agacha, > 0 estica (cenas)
   for ($i = 0; $i -lt 4; $i++) {
     $lf = 0.0
     if ($wf -gt 0) { $ph = $t * $wf + $(if ($i % 2 -eq 1) { [math]::PI } else { 0 }); $lf = [math]::Max(0, [math]::Sin($ph)) * 1.1 }
@@ -397,11 +412,15 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
   # corpo
   switch ($pose) {
     'front' {
-      U $B (-8) (-16) 16 12; U $shade (-8) (-4.8) 16 0.8
+      $ly = -$lift   # corpo acompanha o tamanho das pernas
+      U $B (-8) (-16 + $ly) 16 12; U $shade (-8) (-4.8 + $ly) 16 0.8
+      if ($tilt) { U $B 1 (-18 + $ly) 7 2; U $shade 6 (-18 + $ly) 2 2 }   # cabeca inclinada (cena plugue)
       # braco levantado = "L" (ombro + haste p/ cima), nao um bloco colado no topo da cabeca
-      if ($armL -lt 0 -and $stk -eq '') { U $B (-12) (-12) 4 2; U $B (-12) (-12 + $armL) 2 (2 - $armL) } else { U $B (-12) (-12 + $armL) 4 4 }
-      if ($armR -lt 0 -and $stk -eq '') { U $B 8 (-12) 4 2; U $B 10 (-12 + $armR) 2 (2 - $armR) } else { U $B 8 (-12 + $armR) 4 4 }
-      $eyeList = @(@((-6 + $eyX), $eyY, 2, 2), @((4 + $eyX), $eyY, 2, 2))
+      if ($reachL -gt 0) { U $B (-12 - $reachL) (-11 + $ly) (4 + $reachL) 2 }   # braco esticado (tapa no inseto)
+      elseif ($armL -lt 0 -and $stk -eq '') { U $B (-12) (-12 + $ly) 4 2; U $B (-12) (-12 + $armL + $ly) 2 (2 - $armL) } else { U $B (-12) (-12 + $armL + $ly) 4 4 }
+      if ($armR -lt 0 -and $stk -eq '') { U $B 8 (-12 + $ly) 4 2; U $B 10 (-12 + $armR + $ly) 2 (2 - $armR) } else { U $B 8 (-12 + $armR + $ly) 4 4 }
+      if ($marker) { U '#8b7cf6' 11 (-12.5 + $armR + $ly) 1 3 }   # pincel roxo na mao direita (cena quadro)
+      $eyeList = @(@((-6 + $eyX), ($eyY + $ly), 2, 2), @((4 + $eyX), ($eyY + $ly), 2, 2))
     }
     'turn' {
       U $B (-8) (-16) 16 12; U $shade (-8) (-4.8) 16 0.8
@@ -429,6 +448,7 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
       'open' { U $ink $ex $ey $ew $eh }
       'dash' { U $ink $ex $ey $ew $eh }
       'closed' { U $ink $ex ($ey + 1) 2 0.7 }
+      'squint' { U $ink $ex ($ey + 0.3) 2 0.7 }
       'happy' { U $ink ($ex - 0.3) ($ey + 1.5) 1 1; U $ink ($ex + 0.5) ($ey + 0.5) 1 1; U $ink ($ex + 1.3) ($ey + 1.5) 1 1 }
       'x' {
         U '#3a0f0b' $ex $ey 0.7 0.7; U '#3a0f0b' ($ex + 1.3) $ey 0.7 0.7; U '#3a0f0b' ($ex + 0.65) ($ey + 0.65) 0.7 0.7
@@ -444,6 +464,7 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
     U $glow (-15.8) (-9.4) 0.7 4.8
   }
   $g.Restore($st)
+  if ($cq) { $sp = $g.Save(); $g.TranslateTransform([single]$cx, [single]$gy); Cena-Props $cq 'frente' $t; $g.Restore($sp) }
   $g.SmoothingMode = 'AntiAlias'
 }
 
@@ -535,6 +556,7 @@ function Update-View([double]$nowMs) {
     off = $true; mode = 'offline'; loud = $false; name = ''; ncol = $TEXT; shortTxt = ''; scol = $DIM; ring = 'quiet'; col = $TEXT
     rows = (New-Object System.Collections.ArrayList); agents = @(); agentsN = 0; hist = @(); top = @(); lim = @{}
     warn = ''; doneShow = $false; doneAt = 0.0; nextExp = 0.0; alertKey = ''; summary = ''; moreTxt = ''; rmState = $false
+    failAt = 0.0; askKind = ''
   }
   $B = '#d97757'; $D = '#a8553a'
   $pal = $script:lastPal
@@ -564,6 +586,7 @@ function Update-View([double]$nowMs) {
     $v.sessStart = Num $cur.sessionStart
     $v.turnStart = $(if ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'error') { Num $cur.turnStart } else { 0.0 })
     $v.rmState = ($cur.reduceMotion -eq $true)
+    $v.failAt = Num $cur.failAt; $v.askKind = [string]$cur.askKind   # gatilhos das cenas (inseto, quadro)
     $v.alertKey = '{0}|{1}|{2}' -f $script:stateSid, $v.waitSince, $cur.ask
     # limites: sem leitura = nao aparece; janela ja reiniciou sem leitura nova = "—" (stale)
     foreach ($l in @($cur.limits)) {
@@ -926,6 +949,7 @@ $form.Add_MouseDown({
   if (($_.X / $script:S) -ge $script:geo.sx) {
     $script:down = $true; $script:moved = $false
     $script:downY = [System.Windows.Forms.Cursor]::Position.Y; $script:topDown = $script:top
+    $script:arrY = $script:downY; $script:arrT = $script:sw.Elapsed.TotalSeconds; $script:arrVel = 0.0
     $script:downHit = Hit-Item ($_.X / $script:S) ($_.Y / $script:S)
   } elseif ($script:alert) { Dismiss-Alert }   # clique no balao de alerta dispensa
   else { $script:pinned = ''; $script:hov = ''; $script:hovCand = ''; $script:inval = $true }   # clique no balao aberto fecha
@@ -934,6 +958,7 @@ $form.Add_MouseMove({
   if ($script:down) {
     $d = [System.Windows.Forms.Cursor]::Position.Y - $script:downY
     if ([math]::Abs($d) -gt 3 -or $script:moved) { $script:moved = $true; $script:top = $script:topDown + $d; Apply-Geo }
+    Cena-Arrasto ([System.Windows.Forms.Cursor]::Position.Y) $script:sw.Elapsed.TotalSeconds
     return
   }
   $hit = Hit-Item ($_.X / $script:S) ($_.Y / $script:S)
@@ -1069,6 +1094,7 @@ $form.Add_Paint({ try {
       elseif ($rk -eq 'error') { Ring $g $ccx $icy $rr 2.5 $RED }
       else { Ring $g $ccx $icy $rr 2.5 $(if ($isOpen) { $QUIETO } else { $QUIET }) }
       $u0 = [math]::Max(1.0, [math]::Round(2.0 * 0.9 * $script:S)) / $script:S
+      Cena-Gatilhos $v $t; Cena-Passo $t
       Draw-Mascot $g $ccx ($icy + 8 * $u0) 0.9 $v $t $age 4.0
       if ($script:compact) {
         # linhas escondidas: selo "!" no anel quando 5 h, 7 d ou contexto estao perto do limite (forma + cor)
@@ -1180,6 +1206,7 @@ $timer.Add_Tick({ try {
   # parado de verdade (offline, ocioso, ou "Sua vez" depois do aceno): redesenha devagar em vez de 30 fps
   $calm = ($v.off -or $v.mode -eq 'idle' -or ($v.mode -eq 'waiting' -and -not $v.loud -and $script:lastMode -eq 'waiting' -and ($now - $script:modeT0) -gt 3.2))
   if ($calm -and $v.agentsN -gt 0 -and -not $script:compact) { $calm = $false }   # barra de subagentes anima
+  if ($calm -and (Cena-Ativa)) { $calm = $false }   # cena tocando: 30 fps
   $every = $(if ($v.off) { 30 } else { 8 })
   if ($calm -and -not $script:inval -and ($script:tick % $every) -ne 0) { return }
   $script:inval = $false

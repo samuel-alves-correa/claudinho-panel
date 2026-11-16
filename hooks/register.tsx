@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { Mode, St } from '../types'
+import type { AskKind, Mode, St } from '../types'
 import { detail, ellipsis, limitsOf, prettyModel, ptbr, target, withTarget } from './format'
 import { MASCOTS } from './mascots'
 
@@ -28,16 +28,16 @@ const INITIAL: St = {
   inTok: 0, outTok: 0, cacheTok: 0, hasUsage: false,
   ctxPct: null, usd: null, counts: {}, history: [],
   waitSince: 0, ask: '', ctxTok: null, ctxWin: null, labelShort: 'Ocioso',
-  agentModels: {}, limits: [], busy: false,
+  agentModels: {}, limits: [], busy: false, failAt: 0, askKind: '',
 }
 // Troque a tag quando mudar os campos de St: ela descarta o que a versão antiga guardou.
-const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-7' })
+const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-8' })
 
 const READ = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch'])
 // Ferramentas que pedem algo a você: label da linha de status e texto do pedido.
-const ASKS: Record<string, { label: string; ask: string }> = {
-  AskUserQuestion: { label: 'pergunta para você', ask: 'Pergunta para você' },
-  ExitPlanMode: { label: 'plano aguardando aprovação', ask: 'Aprovar o plano' },
+const ASKS: Record<string, { label: string; ask: string; kind: AskKind }> = {
+  AskUserQuestion: { label: 'pergunta para você', ask: 'Pergunta para você', kind: 'pergunta' },
+  ExitPlanMode: { label: 'plano aguardando aprovação', ask: 'Aprovar o plano', kind: 'plano' },
 }
 
 const NAMES: Record<Mode, string> = {
@@ -123,6 +123,7 @@ async function publish($: Dollar, offline = false, sidOverride = '') {
     tokens: s.hasUsage ? { in: s.inTok, out: s.outTok, cache: s.cacheTok } : null,
     ctxPct: s.ctxPct, usd: s.usd, ctxTok: s.ctxTok, ctxWin: s.ctxWin,
     ask: s.mode === 'waiting' ? s.ask : '', waitSince: s.mode === 'waiting' ? s.waitSince : 0,
+    askKind: s.mode === 'waiting' && s.loud ? s.askKind : '', failAt: s.failAt,
     top: Object.entries(s.counts).sort((a, b) => b[1] - a[1]).slice(0, 5),
     history: s.history.slice(-6).reverse().map(h => ({ t: h.t, text: h.text })),
   }
@@ -152,6 +153,7 @@ async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> 
     // waitSince reinicia ao entrar em waiting (ou ao trocar entre loud e nao-loud)
     waitSince: mode === 'waiting' ? (s.mode === 'waiting' && s.loud === loud ? s.waitSince : now) : 0,
     ask: mode === 'waiting' ? (extra.ask ?? (s.mode === 'waiting' ? s.ask : '')) : '',
+    askKind: mode === 'waiting' && loud ? (extra.askKind ?? (s.mode === 'waiting' && s.loud ? s.askKind : '')) : '',
     ...extra,
     flashUntil: mode === 'done' || mode === 'error' ? now + FLASH_MS : 0,
   }))
@@ -296,7 +298,7 @@ export const register: Register = on => {
     const asks = ASKS[tool]
     if (asks) {
       subAsk = false
-      await setMode($, 'waiting', asks.label, { ask: asks.ask }, true)
+      await setMode($, 'waiting', asks.label, { ask: asks.ask, askKind: asks.kind }, true)
     } else {
       const labelShort = target(rec) || tool
       await setMode($, READ.has(tool) ? 'reading' : 'coding', text, { labelShort })
@@ -308,7 +310,7 @@ export const register: Register = on => {
   on('classic.PermissionRequest', async ($, e, next) => {
     const inp = ((e as { tool_input?: unknown }).tool_input ?? {}) as Record<string, unknown>
     subAsk = fromSub(e)
-    await setMode($, 'waiting', `permissão para ${e.tool_name}`, { ask: ellipsis(withTarget(String(e.tool_name), inp), ASK_MAX) }, true)
+    await setMode($, 'waiting', `permissão para ${e.tool_name}`, { ask: ellipsis(withTarget(String(e.tool_name), inp), ASK_MAX), askKind: 'permissao' }, true)
     return next(e)
   })
   // classic.Notification: avisos do Claude (permissão, "aguardando input")
@@ -317,7 +319,7 @@ export const register: Register = on => {
     const msg = ptbr(e.message)
     // mantem o pedido ja conhecido (ferramenta + alvo) se a permissao veio antes
     const cur = await read($, st)
-    await setMode($, 'waiting', ellipsis(msg, 50), loud && !(cur.mode === 'waiting' && cur.loud) ? { ask: ellipsis(msg, ASK_MAX) } : {}, loud)
+    await setMode($, 'waiting', ellipsis(msg, 50), loud && !(cur.mode === 'waiting' && cur.loud) ? { ask: ellipsis(msg, ASK_MAX), askKind: 'aviso' } : {}, loud)
     return next(e)
   })
   // classic.PostToolUse: ferramenta terminou -> volta a Pensando (modelo lê o resultado)
@@ -331,7 +333,8 @@ export const register: Register = on => {
   on('classic.PostToolUseFailure', async ($, e, next) => {
     const now = await $.clock.now()
     const sub = fromSub(e)
-    await update($, st, (s: St) => ({ ...s, history: log(s, now, `${sub ? '↳ ' : ''}falhou: ${e.tool_name}`) }))
+    // failAt só para a conversa principal: o widget transforma em cena do inseto
+    await update($, st, (s: St) => ({ ...s, failAt: sub ? s.failAt : now, history: log(s, now, `${sub ? '↳ ' : ''}falhou: ${e.tool_name}`) }))
     if (sub) { if (subAsk) { subAsk = false; await resumeMain($) }; await publish($); return next(e) }
     await backToThinking($, e.tool_name)
     return next(e)
