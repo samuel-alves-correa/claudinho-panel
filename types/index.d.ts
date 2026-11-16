@@ -29,6 +29,10 @@ export type St = {
   labelShort: string
   /** modelo de cada subagente (id -> modelo), anotado no agent.spawn; guarda os 20 últimos */
   agentModels: Record<string, string>
+  /** janelas de limite de uso (five_hour, seven_day, spend_limit); vazio sem leitura */
+  limits: { kind: string; pct: number; resetsAt: number }[]
+  /** a conversa principal está no meio de um turno (do prompt.submit até o Stop) */
+  busy: boolean
 }
 
 declare module 'claude-code' {

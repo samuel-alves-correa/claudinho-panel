@@ -13,6 +13,7 @@ const STOP_ARGV = [
 const IDLE_AFTER_MS = 120_000
 const FLASH_MS = 4_000
 const TICK_MS = 1000
+const LIMITS_EVERY_MS = 60_000
 
 const INITIAL: St = {
   mode: 'idle', loud: false, label: 'Ocioso', since: 0, frame: 0,
@@ -20,10 +21,10 @@ const INITIAL: St = {
   inTok: 0, outTok: 0, cacheTok: 0, hasUsage: false,
   ctxPct: null, usd: null, counts: {}, history: [],
   waitSince: 0, ask: '', ctxTok: null, ctxWin: null, labelShort: 'Ocioso',
-  agentModels: {},
+  agentModels: {}, limits: [], busy: false,
 }
 // Troque a tag quando mudar os campos de St: ela descarta o que a versão antiga guardou.
-const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-4' })
+const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-6' })
 
 const READ = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch'])
 const ASK = new Set(['AskUserQuestion', 'ExitPlanMode'])
@@ -104,6 +105,12 @@ function prettyModel(id: string): string {
   return `${fam.charAt(0).toUpperCase()}${fam.slice(1)} ${p[2]}${p[3] ? '.' + p[3] : ''}${p[4] ?? ''}`
 }
 
+// Janelas de limite de uso como o widget desenha: % usado e quando reinicia (ms epoch; 0 = sem data).
+function limitsOf(usage: any): St['limits'] {
+  const rows = (usage?.rateLimits ?? []) as { kind: string; percentUsed: number; resetsAt?: string }[]
+  return rows.map(r => ({ kind: r.kind, pct: r.percentUsed, resetsAt: r.resetsAt ? Date.parse(r.resetsAt) || 0 : 0 }))
+}
+
 // Subagentes/teammates que ainda estão rodando (terminados saem da lista).
 const ACTIVE = new Set(['pending', 'running', 'waiting'])
 async function activeAgents($: any): Promise<{ id: string; type: string; desc: string }[]> {
@@ -112,6 +119,19 @@ async function activeAgents($: any): Promise<{ id: string; type: string; desc: s
 }
 
 // O widget le este mesmo arquivo (iniciar-widget.cmd passa -StateFile; o padrao do .ps1 e o mesmo caminho).
+// Evento vindo do loop de um subagente/teammate (tool.call e turn.complete trazem agentId; os classic, agent_id).
+const fromSub = (e: unknown): boolean => {
+  const r = e as { agentId?: string; agent_id?: string }
+  return r.agentId !== undefined || r.agent_id !== undefined
+}
+// Subagente destravou um pedido de permissão: volta ao que a conversa principal estava fazendo.
+async function resumeMain($: any) {
+  const s: St = await read($, st)
+  if (!(s.mode === 'waiting' && s.loud)) return
+  if (s.busy) await setMode($, 'thinking', 'continuando')
+  else await setMode($, 'waiting', 'sua vez de mandar mensagem')
+}
+
 const stateFile = ($: any): string => `${$.plugin.root}/claudinho-state.json`
 
 // Publica o estado já "desenhado" num JSON para o widget externo (claudinho-widget.ps1).
@@ -128,7 +148,7 @@ async function publish($: any) {
     return { type: a.type, desc: a.desc, model: am ? prettyModel(am) : '' }
   })
   const out = {
-    model, agents,
+    model, agents, limits: s.limits ?? [],
     project, ts: now, mode: s.mode, loud: s.loud, label: s.label, labelShort: s.labelShort || s.label,
     name: nameOf(s.mode, s.loud), short: shortOf(s.mode, s.loud), emoji: emojiOf(s.mode, s.loud),
     color: colorOf(s.mode, s.loud), frame: s.frame, rows: sprite(s.mode, s.frame), palette: m.palette,
@@ -162,6 +182,9 @@ async function setMode($: any, mode: Mode, label: string, extra: Partial<St> = {
 export const register: Register = on => {
   let cancelTick: (() => void) | undefined
   let agentSig = ''
+  let limitsAt = 0
+  // o alerta atual veio de um pedido de permissão de subagente (só esse um subagente pode destravar)
+  let subAsk = false
 
   const log = (s: St, now: number, text: string) => [...s.history, { t: now, text }].slice(-8)
 
@@ -183,7 +206,21 @@ export const register: Register = on => {
       }
       // subagente começou ou terminou: republica para o widget atualizar a lista
       const sig = (await activeAgents($)).map(a => a.id).join(',')
-      if (sig !== agentSig) { agentSig = sig; await publish($) }
+      let dirty = sig !== agentSig
+      agentSig = sig
+      // limites: relê 1x por minuto, senão o anel só muda quando um turno termina
+      if (n - limitsAt >= LIMITS_EVERY_MS) {
+        limitsAt = n
+        const usage = await $.session.usage().catch(() => undefined)
+        if (usage?.rateLimits?.length) {
+          const fresh = limitsOf(usage)
+          if (JSON.stringify(fresh) !== JSON.stringify(s.limits ?? [])) {
+            await update($, st, (x: St) => ({ ...x, limits: fresh }))
+            dirty = true
+          }
+        }
+      }
+      if (dirty) await publish($)
     })
     cancelTick = () => t.cancel()
     return next(e)
@@ -209,8 +246,9 @@ export const register: Register = on => {
 
   // prompt enviado -> Pensando
   on('prompt.submit', async ($, e, next) => {
+    if (fromSub(e)) return next(e)
     const now = await $.clock.now()
-    await setMode($, 'thinking', 'processando sua mensagem', { turnStart: now })
+    await setMode($, 'thinking', 'processando sua mensagem', { turnStart: now, busy: true })
     return next(e)
   })
 
@@ -220,9 +258,14 @@ export const register: Register = on => {
     const rec = e as unknown as Record<string, unknown>
     const text = detail(tool, rec)
     const now = await $.clock.now()
+    const sub = fromSub(e)
     await update($, st, (s: St) => ({
-      ...s, counts: { ...s.counts, [tool]: (s.counts[tool] ?? 0) + 1 }, history: log(s, now, withTarget(tool, rec)),
+      ...s, counts: { ...s.counts, [tool]: (s.counts[tool] ?? 0) + 1 },
+      history: log(s, now, (sub ? '↳ ' : '') + withTarget(tool, rec)),
     }))
+    // ferramenta de subagente: conta e entra no histórico, mas não troca o estado do mascote
+    if (sub) { await publish($); return next(e) }
+    if (ASK.has(tool)) subAsk = false
     if (ASK.has(tool)) await setMode($, 'waiting', `${tool} — responda no chat`, { ask: `${tool} · ${tool === 'ExitPlanMode' ? 'aprovar plano' : 'pergunta'}` }, true)
     else {
       const labelShort = target(rec) || tool
@@ -234,6 +277,7 @@ export const register: Register = on => {
   // classic.PermissionRequest: o agente parou pedindo permissão
   on('classic.PermissionRequest', async ($, e, next) => {
     const inp = ((e as any).tool_input ?? {}) as Record<string, unknown>
+    subAsk = fromSub(e)
     await setMode($, 'waiting', `permissão para ${e.tool_name}`, { ask: withTarget(String(e.tool_name), inp) }, true)
     return next(e)
   })
@@ -248,6 +292,7 @@ export const register: Register = on => {
   })
   // classic.PostToolUse: ferramenta terminou -> volta a Pensando (modelo lê o resultado)
   on('classic.PostToolUse', async ($, e, next) => {
+    if (fromSub(e)) { if (subAsk) { subAsk = false; await resumeMain($) }; return next(e) }
     // mantém "Codando/Lendo" visível por pelo menos 1,5s, senão comandos rápidos nunca aparecem
     const cur = await read($, st)
     const now = await $.clock.now()
@@ -266,13 +311,16 @@ export const register: Register = on => {
   // classic.PostToolUseFailure: ferramenta falhou -> Erro (alguns segundos)
   on('classic.PostToolUseFailure', async ($, e, next) => {
     const now = await $.clock.now()
-    await update($, st, (s: St) => ({ ...s, history: log(s, now, `ERRO ${e.tool_name}`) }))
+    const sub = fromSub(e)
+    await update($, st, (s: St) => ({ ...s, history: log(s, now, `${sub ? '↳ ' : ''}ERRO ${e.tool_name}`) }))
+    if (sub) { if (subAsk) { subAsk = false; await resumeMain($) }; await publish($); return next(e) }
     await setMode($, 'error', `${e.tool_name} falhou`)
     return next(e)
   })
   // classic.Stop: turno acabou -> Terminou
   on('classic.Stop', async ($, e, next) => {
-    await setMode($, 'done', 'turno concluído')
+    if (fromSub(e)) return next(e)
+    await setMode($, 'done', 'turno concluído', { busy: false })
     return next(e)
   })
 
@@ -290,8 +338,10 @@ export const register: Register = on => {
       ctxTok: usage?.context.tokens ?? s.ctxTok,
       ctxWin: usage?.context.window ?? s.ctxWin,
       usd: usage?.cost?.usd ?? s.usd,
+      limits: usage?.rateLimits?.length ? limitsOf(usage) : s.limits,
     }))
-    if (e.reason === 'error') await setMode($, 'error', 'turno terminou com erro')
+    await publish($)
+    if (e.reason === 'error' && !fromSub(e)) await setMode($, 'error', 'turno terminou com erro')
     return next(e)
   })
 
