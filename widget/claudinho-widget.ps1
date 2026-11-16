@@ -2,12 +2,12 @@
 # Mouse: passar num item abre o balao dele (~180 ms); clique num item fixa/solta o balao; duplo clique no mascote reduz/expande;
 #   arrastar na vertical muda a posicao; botao direito = menu. A janela nao rouba o foco nem aparece no Alt+Tab.
 # Le <StateDir>\<sessionId>.json (um por sessao, gravados pelo mod), relendo so o que mudou; mostra a sessao mais urgente.
-# Config em %USERPROFILE%\.claude\claudinho-widget.json (top, compact, pin, reduceMotion); PID em %USERPROFILE%\.claude\claudinho-widget.pid.
+# Config em %USERPROFILE%\.claude\claudinho-widget.json (top, compact, reduceMotion; o balao fixado nao persiste); PID em %USERPROFILE%\.claude\claudinho-widget.pid.
 # Variaveis de ambiente: CW_REDUCE_MOTION=1 (ou reduceMotion no estado) desliga pulso, giros e pulos do mascote.
 #   Depuracao: CW_PIN=mascot|limits|ctx|sub inicia com o balao daquele item fixado; CW_TOP=<px> forca a posicao vertical;
 #   CW_COMPACT=0|1 forca expandido/reduzido; CW_NO_PID=1 nao grava nem apaga o arquivo .pid (testes com outro widget aberto);
 #   CW_CFG=<arquivo> usa outro arquivo de config (testes sem mexer na config do usuario).
-param([string]$StateDir = (Join-Path $PSScriptRoot '..\state'))
+param([string]$StateDir = (Join-Path $env:USERPROFILE '.claude\claudinho\state'))
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -42,6 +42,9 @@ namespace Cw {
     [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    // resolucao do relogio do processo (Sleep de 1 ms na Pulse)
+    [DllImport("winmm.dll")] public static extern uint timeBeginPeriod(uint p);
+    [DllImport("winmm.dll")] public static extern uint timeEndPeriod(uint p);
     // "Efeitos de animacao" do Windows (SPI_GETCLIENTAREAANIMATION)
     public static bool Animations() { int a = 1; return !(SystemParametersInfo(0x1042, 0, ref a, 0) && a == 0); }
     // area de trabalho do monitor principal, sem cache (SPI_GETWORKAREA)
@@ -63,6 +66,33 @@ namespace Cw {
       int cx = GetSystemMetrics(0), cy = GetSystemMetrics(1);
       return (r.L <= 0 && r.T <= 0 && r.R >= cx && r.B >= cy) ? 1 : 0;
     }
+  }
+  // timer de quadros: o Timer do WinForms arredonda para o tick do sistema (~15,6 ms), entao 33 ms viram ~47 ms (21 fps).
+  // Esta conta o tempo numa thread propria e dispara Tick na thread da janela (BeginInvoke), um por vez (sem fila).
+  public class Pulse {
+    readonly Control owner; volatile int iv = 33; volatile bool run, pending;
+    System.Threading.Thread th;
+    public event EventHandler Tick;
+    public Pulse(Control c) { owner = c; }
+    public int Interval { get { return iv; } set { iv = Math.Max(1, value); } }
+    public void Start() {
+      if (run) return; run = true; W.timeBeginPeriod(1);
+      th = new System.Threading.Thread(Loop); th.IsBackground = true; th.Start();
+    }
+    public void Stop() { if (!run) return; run = false; W.timeEndPeriod(1); }
+    void Loop() {
+      var sw = System.Diagnostics.Stopwatch.StartNew(); double next = iv;
+      while (run) {
+        double wait = next - sw.Elapsed.TotalMilliseconds;
+        if (wait > 1) { System.Threading.Thread.Sleep((int)wait); continue; }
+        if (wait > 0) { System.Threading.Thread.Sleep(0); continue; }
+        next += iv; if (next < sw.Elapsed.TotalMilliseconds) next = sw.Elapsed.TotalMilliseconds + iv;   // atrasou: nao acumula
+        if (pending || !owner.IsHandleCreated) continue;
+        pending = true;
+        try { owner.BeginInvoke(new MethodInvoker(Fire)); } catch { pending = false; }
+      }
+    }
+    void Fire() { pending = false; if (!run) return; var h = Tick; if (h != null) h(this, EventArgs.Empty); }
   }
 }
 '@
@@ -295,7 +325,12 @@ function Mix([string]$a, [string]$b, [double]$k) {
 # ---------- o bichinho (pixel-art como no app do Claude), animado por tempo ----------
 # Poses: de frente, virando, agachado. Unico adereço: o notebook no Codando (o anel ao redor comunica o estado).
 # Desenha um retangulo em "unidades de pixel" do bichinho (usa $script:mgx e $script:mu definidos em Draw-Mascot)
-function U($hex, $x, $y, $w, $h) { $u = $script:mu; $script:mgx.FillRectangle((Br $hex), [single]($x * $u), [single]($y * $u), [single]($w * $u), [single]($h * $u)) }
+# (pincel opaco por cor num mapa direto: chamar Br aqui custava ~3x mais por retangulo, e sao ~20 por quadro)
+$script:ubr = @{}
+function U($hex, $x, $y, $w, $h) {
+  $b = $script:ubr[$hex]; if (-not $b) { $b = Br $hex; $script:ubr[$hex] = $b }
+  $u = $script:mu; $script:mgx.FillRectangle($b, [single]($x * $u), [single]($y * $u), [single]($w * $u), [single]($h * $u))
+}
 function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [double]$age, [double]$range) {
   $mode = [string]$v.mode; $loud = [bool]$v.loud
   $B = $v.B; $shade = $v.shade; $deep = $v.deep
@@ -438,6 +473,7 @@ function Scan-State([double]$nowMs) {
   $seen = @{}
   if ($files) {
     foreach ($f in $files) {
+      if (-not $f.EndsWith('.json')) { continue }
       $seen[$f] = 1
       $e = $script:sess[$f]
       if (-not $e) { $e = @{ path = $f; wt = [datetime]::MinValue; fwt = [datetime]::MinValue; st = $null; sid = ''; alive = $false }; $script:sess[$f] = $e }
@@ -463,7 +499,9 @@ function Scan-State([double]$nowMs) {
     $e.alive = $alive
     if (-not $alive) {
       # morta ha mais de 1 h: apaga o arquivo
-      if ($gc -and ([datetime]::UtcNow - $e.fwt).TotalHours -gt 1 -and ($nowMs - $ts) -gt 3600000) {
+      # nunca interpretada (JSON corrompido): apaga com mais de 2 min sem escrita (guarda contra gravacao em andamento)
+      $stale = $(if ($o) { ([datetime]::UtcNow - $e.fwt).TotalHours -gt 1 -and ($nowMs - $ts) -gt 3600000 } else { ([datetime]::UtcNow - $e.fwt).TotalMinutes -gt 2 })
+      if ($gc -and $stale) {
         try { [System.IO.File]::Delete($f); $script:sess.Remove($f) } catch { }
       }
       continue
@@ -773,16 +811,14 @@ $form = New-Object Cw.NForm
 $form.FormBorderStyle = 'None'; $form.TopMost = $true; $form.ShowInTaskbar = $false
 $form.StartPosition = 'Manual'; $form.BackColor = $BLACKC
 $script:top = $script:wa.Top + 70 * $script:S
-# config salva: posicao, modo reduzido, balao fixado e reduzir movimento
+# config salva: posicao, modo reduzido e reduzir movimento (o balao fixado nao persiste; "pin" de configs antigas e ignorado)
 $CFG = $(if ($env:CW_CFG) { $env:CW_CFG } else { "$env:USERPROFILE\.claude\claudinho-widget.json" })
 $PIDF = "$env:USERPROFILE\.claude\claudinho-widget.pid"
-$PINKEYS = 'mascot', 'five_hour', 'seven_day', 'ctx', 'sub'
 try {
   if (Test-Path -LiteralPath $CFG) {
     $sv = Get-Content -LiteralPath $CFG -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($null -ne $sv.top -and [double]$sv.top -ge $script:wa.Top -and [double]$sv.top -le ($script:wa.Bottom - 60)) { $script:top = [double]$sv.top }
     if ($null -ne $sv.compact) { $script:compact = [bool]$sv.compact }
-    if ($sv.pin -and $PINKEYS -contains [string]$sv.pin) { $script:pinned = [string]$sv.pin }
     if ($null -ne $sv.reduceMotion) { $script:reducePref = [bool]$sv.reduceMotion }
   }
 } catch { }
@@ -794,7 +830,7 @@ function Save-Cfg {
   try {
     $d = Split-Path -Parent $CFG
     if (-not (Test-Path -LiteralPath $d)) { $null = New-Item -ItemType Directory -Path $d -Force }
-    (@{ top = [int]$script:top; compact = [bool]$script:compact; pin = [string]$script:pinned; reduceMotion = [bool]$script:reducePref } | ConvertTo-Json -Compress) | Set-Content -LiteralPath $CFG -Encoding UTF8
+    (@{ top = [int]$script:top; compact = [bool]$script:compact; reduceMotion = [bool]$script:reducePref } | ConvertTo-Json -Compress) | Set-Content -LiteralPath $CFG -Encoding UTF8
   } catch { }
 }
 # PID para o mod fechar so este processo
@@ -892,6 +928,7 @@ $form.Add_MouseDown({
     $script:downY = [System.Windows.Forms.Cursor]::Position.Y; $script:topDown = $script:top
     $script:downHit = Hit-Item ($_.X / $script:S) ($_.Y / $script:S)
   } elseif ($script:alert) { Dismiss-Alert }   # clique no balao de alerta dispensa
+  else { $script:pinned = ''; $script:hov = ''; $script:hovCand = ''; $script:inval = $true }   # clique no balao aberto fecha
 })
 $form.Add_MouseMove({
   if ($script:down) {
@@ -916,6 +953,7 @@ $form.Add_MouseUp({
   $script:down = $false; $script:moved = $false; $script:downHit = $null
 })
 $form.Add_FormClosing({
+  $timer.Stop()
   if ($usePid) { try { if ([System.IO.File]::Exists($PIDF) -and ([System.IO.File]::ReadAllText($PIDF).Trim() -eq [string]$PID)) { [System.IO.File]::Delete($PIDF) } } catch { } }
 })
 # menu: os rotulos dizem o que vai acontecer no estado atual
@@ -948,13 +986,63 @@ function Arc($g, [double]$cx, [double]$cy, [double]$r, [double]$w, [string]$hex,
   $g.DrawArc((Pn $hex ([single]$w)), [single]($cx - $r), [single]($cy - $r), [single](2 * $r), [single](2 * $r), [single]$start, [single]$sweep)
 }
 
+# camada fixa (fundo, nome, linhas de uso e balao) em pixels do dispositivo: o PowerShell e o gargalo, entao ela
+# so e redesenhada quando muda (forma, estado, item aberto ou, com balao de tempos, a cada segundo); o Paint copia e anima por cima
+$script:lay = $null; $script:layKey = ''
+function Draw-Static($g, $geo, $v, [string]$openK, [double]$nowMs) {
+  $sepDone = $false
+  foreach ($it in $script:items) {
+    $iy = $geo.sy + $it.y
+    if ($it.k -eq 'mascot') {
+      if (-not $script:compact) { $g.DrawString($v.shortTxt, $fName, (Br $v.scol), [System.Drawing.RectangleF]::new([single]$geo.sx, [single]($iy + 2 * $MR + 8), [single]$NW, 16), $center) }
+      continue
+    }
+    # linhas de uso: rotulo a esquerda, valor a direita, barra fina embaixo (a barra de subagentes anima no Paint)
+    $rw = $it.row
+    $x0 = $geo.sx + 10; $w0 = $NW - 20
+    if (-not $sepDone) { $sepDone = $true; Rect $g $LINE $x0 ($iy - 9) $w0 1 }
+    $g.FillPath((Br $(if ($openK -eq $it.k) { $TRKO } else { $TRK })), (RoundPath $x0 ($iy + 18) $w0 4 2))
+    if ($it.k -ne 'sub' -and $null -ne $rw.pv -and $rw.pv -gt 0) {
+      $g.FillPath((Br $rw.fill), (RoundPath $x0 ($iy + 18) ([math]::Max(4, $w0 * $rw.pv / 100)) 4 2))
+    }
+    $g.DrawString($rw.lab, $fSmall, (Br $DIM), [single]($x0 - 3), [single]($iy - 1))
+    $g.DrawString($rw.val, $fRing, (Br $rw.vcol), [System.Drawing.RectangleF]::new([single]$x0, [single]($iy - 1), [single]($w0 + 3), 16), $right)
+  }
+  if ($geo.open) {
+    $stg = $g.Save()
+    $g.TranslateTransform(0, [single]$geo.by)
+    [void](Draw-Balloon $g ([string]$geo.item.bal) $true $nowMs)
+    $g.Restore($stg)
+  }
+}
+
 $form.Add_Paint({ try {
   $g = $_.Graphics
   $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
-  $g.Clear($BLACKC)
-  $g.ScaleTransform($script:S, $script:S)
   $geo = $script:geo; $v = $script:vm
-  if (-not $geo -or -not $v) { return }
+  if (-not $geo -or -not $v) { $g.Clear($BLACKC); return }
+  $nowMs = NowMs
+  $openK = $(if ($geo.open) { [string]$geo.item.k } else { '' })
+  # o fundo preto ja e a faixa e o balao (a Region recorta a forma); so os baloes com tempos ("ha 5 s", "reinicia em") mudam sozinhos
+  $tb = ''; if ($geo.open -and -not $v.off -and ($geo.item.bal -eq 'mascot' -or $geo.item.bal -eq 'limits')) { $tb = [math]::Floor($nowMs / 1000) }
+  $cs = $form.ClientSize
+  $lk = '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $script:shapeKey, $cs.Width, $cs.Height, $script:viewVer, $script:compact, $openK, $tb
+  if ($lk -ne $script:layKey -or -not $script:lay) {
+    if ($script:lay) { $script:lay.Dispose(); $script:lay = $null }
+    $script:layKey = $lk
+    $script:lay = New-Object System.Drawing.Bitmap ([math]::Max(1, $cs.Width)), ([math]::Max(1, $cs.Height)), ([System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
+    $gl = [System.Drawing.Graphics]::FromImage($script:lay)
+    try {
+      $gl.Clear($BLACKC)   # opaco: o ClearType precisa de fundo solido para ficar igual ao desenho direto
+      $gl.SmoothingMode = 'AntiAlias'; $gl.TextRenderingHint = 'ClearTypeGridFit'
+      $gl.ScaleTransform($script:S, $script:S)
+      Draw-Static $gl $geo $v $openK $nowMs
+    } finally { $gl.Dispose() }
+  }
+  $g.CompositingMode = 'SourceCopy'; $g.InterpolationMode = 'NearestNeighbor'
+  $g.DrawImage($script:lay, 0, 0, $script:lay.Width, $script:lay.Height)
+  $g.CompositingMode = 'SourceOver'
+  $g.ScaleTransform($script:S, $script:S)
   $t = $script:sw.Elapsed.TotalSeconds
   $mode = [string]$v.mode
   if ($mode -ne $script:lastMode) {
@@ -968,13 +1056,8 @@ $form.Add_Paint({ try {
   if ($v.ring -eq 'loud' -and -not $script:rm -and $age -lt (3 * [math]::PI / 4.2)) { $pulse = [math]::Abs([math]::Sin($t * 4.2)) }
   $spinA = $(if ($script:rm) { -90.0 } else { ($t * 240) % 360 })
 
-  # faixa
-  $sp = NotchPath $geo.sx $geo.sy $NW $geo.sh
-  $g.FillPath((Br $BLACK), $sp); $sp.Dispose()
+  # partes animadas: anel + mascote (+ selo) e a barra de subagentes
   $ccx = $geo.sx + $NW / 2
-  $openK = $(if ($geo.open) { [string]$geo.item.k } else { '' })
-
-  $sepDone = $false
   foreach ($it in $script:items) {
     $iy = $geo.sy + $it.y; $icy = $geo.sy + $it.cy
     $isOpen = ($openK -eq $it.k)
@@ -996,39 +1079,19 @@ $form.Add_Paint({ try {
           Rect $g $BLACK ($px - 0.9) ($py - 4.3) 1.8 5.2
           Rect $g $BLACK ($px - 0.9) ($py + 2.2) 1.8 1.8
         }
-      } else {
-        $g.DrawString($v.shortTxt, $fName, (Br $v.scol), [System.Drawing.RectangleF]::new([single]$geo.sx, [single]($iy + 2 * $MR + 8), [single]$NW, 16), $center)
       }
       continue
     }
-    # linhas de uso: rotulo a esquerda, valor a direita, barra fina embaixo
-    $rw = $it.row
-    $x0 = $geo.sx + 10; $w0 = $NW - 20
-    if (-not $sepDone) { $sepDone = $true; Rect $g $LINE $x0 ($iy - 9) $w0 1 }
-    $g.FillPath((Br $(if ($isOpen) { $TRKO } else { $TRK })), (RoundPath $x0 ($iy + 18) $w0 4 2))
     if ($it.k -eq 'sub') {
+      $x0 = $geo.sx + 10; $w0 = $NW - 20
       $sx0 = $(if ($script:rm) { 0.0 } else { ($w0 - 18) * (0.5 + 0.5 * [math]::Sin($t * 3)) })
       $g.FillPath((Br $SUBC), (RoundPath ($x0 + $sx0) ($iy + 18) $(if ($script:rm) { $w0 } else { 18 }) 4 2))
-    } elseif ($null -ne $rw.pv -and $rw.pv -gt 0) {
-      $g.FillPath((Br $rw.fill), (RoundPath $x0 ($iy + 18) ([math]::Max(4, $w0 * $rw.pv / 100)) 4 2))
     }
-    $g.DrawString($rw.lab, $fSmall, (Br $DIM), [single]($x0 - 3), [single]($iy - 1))
-    $g.DrawString($rw.val, $fRing, (Br $rw.vcol), [System.Drawing.RectangleF]::new([single]$x0, [single]($iy - 1), [single]($w0 + 3), 16), $right)
-  }
-
-  # balao
-  if ($geo.open) {
-    $bp = BalloonPath $geo.by $geo.bh $geo.tipY
-    $g.FillPath((Br $BLACK), $bp); $bp.Dispose()
-    $stg = $g.Save()
-    $g.TranslateTransform(0, [single]$geo.by)
-    [void](Draw-Balloon $g ([string]$geo.item.bal) $true (NowMs))
-    $g.Restore($stg)
   }
 } catch { Log ("PAINT: " + $_.Exception.Message + " @ " + $_.InvocationInfo.ScriptLineNumber) } finally { foreach ($p2 in $script:pp) { $p2.Dispose() }; $script:pp.Clear() } })
 
 # ---------- timer: anima por TEMPO (nao por quadro), le os arquivos so quando mudam ----------
-$timer = New-Object System.Windows.Forms.Timer
+$timer = New-Object Cw.Pulse $form   # ~30 fps reais (ver Cw.Pulse)
 $timer.Interval = 33
 $script:tick = 0
 $timer.Add_Tick({ try {
@@ -1074,6 +1137,12 @@ $timer.Add_Tick({ try {
   # mouse fora da faixa e do balao (posicao real do cursor; MouseLeave se perde quando a janela muda de forma)
   $inside = $false
   if ($inB) { $rgn = $form.Region; $inside = ((-not $rgn) -or $rgn.IsVisible($form.PointToClient($cp))) }
+  # clique fora do widget (em outra janela, que o form nao recebe): solta o balao fixado
+  $btn = ((([Cw.W]::GetAsyncKeyState(1) -bor [Cw.W]::GetAsyncKeyState(2)) -band 0x8000) -ne 0)
+  if ($btn -and -not $script:btnDown -and -not $inside -and -not $menu.Visible -and $script:pinned) {
+    $script:pinned = ''; $script:hov = ''; $script:hovCand = ''; $script:inval = $true
+  }
+  $script:btnDown = $btn
   if ($inside -or $script:down -or $menu.Visible) { $script:leaveAt = 0.0; if ($v.doneShow) { $script:ackPending = $true } }
   elseif (($script:hov -or $script:hovCand -or $script:ackPending) -and $script:leaveAt -le 0) { $script:leaveAt = $now }
   # saiu: fecha o balao apos ~400 ms (e reconhece o "terminou" visto)
@@ -1086,7 +1155,7 @@ $timer.Add_Tick({ try {
   # qual item esta aberto: mouse > fixado (ou o mascote, se o fixado nao existe agora) > alerta
   $itOpen = $null
   if ($script:hov) { $itOpen = Find-Item $script:hov }
-  if (-not $itOpen -and $script:pinned) { $itOpen = Find-Item $script:pinned; if (-not $itOpen) { $itOpen = Find-Item 'mascot' } }
+  if (-not $itOpen -and $script:pinned -and -not $v.off) { $itOpen = Find-Item $script:pinned; if (-not $itOpen) { $itOpen = Find-Item 'mascot' } }
   if (-not $itOpen -and $script:alert) { $itOpen = Find-Item 'mascot' }
   $ok = $(if ($itOpen) { [string]$itOpen.k } else { '' })
   if ($ok -ne $script:openKey) { $script:openKey = $ok; $script:inval = $true }

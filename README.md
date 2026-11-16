@@ -21,10 +21,10 @@ claudinho-panel/
 └─ widget/
    ├─ claudinho-widget.ps1      widget "sempre no topo" (PowerShell + WinForms/GDI+)
    └─ iniciar-widget.cmd        abre o widget sem janela de console
-state/<sessionId>.json          estado de cada sessão (gerado; fora do git)
+(em %USERPROFILE%\.claude\claudinho\state\<sessionId>.json: estado de cada sessão, gerado fora do repositório)
 ```
 
-Fluxo: **hooks do Claude Code → `register.tsx` atualiza o estado e grava `state/<sessionId>.json` na pasta do mod → `claudinho-widget.ps1` lê a pasta e anima o mascote e as linhas de uso.**
+Fluxo: **hooks do Claude Code → `register.tsx` atualiza o estado e grava `%USERPROFILE%\.claude\claudinho\state\<sessionId>.json` → `claudinho-widget.ps1` lê a pasta e anima o mascote e as linhas de uso.**
 O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps ao mudar a altura da faixa) é calculada por tempo dentro do widget.
 
 **Várias sessões e sessão encerrada:** cada sessão do Claude Code grava o próprio arquivo e o republica a cada 5 s (o campo `ts` é o heartbeat). O widget considera morta a sessão com `offline: true` (gravado no `session.end`) ou com `ts` há mais de 20 s, e apaga o arquivo depois de 1 h. Entre as vivas, mostra a mais urgente: aguardando em alerta > erro > pensando/codando/lendo > terminou > sua vez > ocioso (empate: `ts` mais recente); as outras aparecem como "+N sessões" no balão do mascote. Sem nenhuma sessão viva, o mascote fica parado de olhos fechados com "Fechado" e o balão diz "Claude Code fechado".
@@ -66,9 +66,8 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
    ```
    claude --plugin-dir C:\caminho\para\claudinho-panel
    ```
-2. Nenhum caminho precisa ser ajustado: o mod grava o estado em `<pasta do mod>/state/<sessionId>.json` (via `$.plugin.root`) e o
-   `widget/iniciar-widget.cmd` passa essa pasta ao widget (`-StateDir`). Para rodar o widget à mão, o padrão do `.ps1` é a mesma pasta.
-   O widget guarda posição vertical (`top`), modo reduzido (`compact`), balão fixado (`pin`) e redução de movimento (`reduceMotion`) em `%USERPROFILE%\.claude\claudinho-widget.json`, e o próprio PID em `%USERPROFILE%\.claude\claudinho-widget.pid` (é por ele que `/claudinho off` fecha só o widget).
+2. Nenhum caminho precisa ser ajustado: o mod grava o estado em `%USERPROFILE%\.claude\claudinho\state\<sessionId>.json` e o widget lê essa mesma pasta por padrão (`-StateDir` só serve para testes). A pasta é fixa para não mudar quando o plugin é atualizado de versão.
+   O widget guarda posição vertical (`top`), modo reduzido (`compact`) e redução de movimento (`reduceMotion`) em `%USERPROFILE%\.claude\claudinho-widget.json`, e o próprio PID em `%USERPROFILE%\.claude\claudinho-widget.pid` (é por ele que `/claudinho off` fecha só o widget).
 3. Valide: `claude plugin validate <pasta>` (deve passar sem erros de tipo).
 4. Dentro do Claude Code, rode `/claudinho on`.
 
@@ -90,7 +89,7 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 | ctx | linha do contexto (`ctxPct`), "—" sem dado |
 | sub | linha com o número de subagentes ativos e uma barra em movimento, em rosa (`#f472b6`); só aparece quando há algum |
 
-- **Balão por item:** passe o mouse num item (abre após ~180 ms) e aparece à esquerda um balão preto com seta apontando para ele. **Clique num item fixa o balão dele; outro clique solta.** O pino fica salvo; se o item fixado não existir no momento, aparece o balão do mascote. Mascote: estado, projeto, o que faz/pede, modelo, sessão/turno e atividade recente. 5h e 7d: janelas de uso com barra e "reinicia em…". ctx: barra, tokens, entrada/saída/custo, cache e ferramentas. sub: descrição e modelo de cada subagente. Ao sair da janela, o balão fecha após ~400 ms; o balão acompanha o conteúdo e nunca sai da tela.
+- **Balão por item:** passe o mouse num item (abre após ~180 ms) e aparece à esquerda um balão preto com seta apontando para ele. **Clique num item fixa o balão dele; outro clique solta.** O pino não é salvo (some ao reiniciar) e, com o Claude Code fechado, o balão só abre ao passar o mouse; clicar no próprio balão aberto ou em qualquer lugar fora do widget fecha. Se o item fixado não existir no momento, aparece o balão do mascote. Mascote: estado, projeto, o que faz/pede, modelo, sessão/turno e atividade recente. 5h e 7d: janelas de uso com barra e "reinicia em…". ctx: barra, tokens, entrada/saída/custo, cache e ferramentas. sub: descrição e modelo de cada subagente. Ao sair da janela, o balão fecha após ~400 ms; o balão acompanha o conteúdo e nunca sai da tela.
 - **Modo reduzido:** duplo clique no mascote (ou "Reduzir" / "Expandir" no menu) para deixar só a bolinha do mascote, sem o nome do estado e sem as linhas de uso (~110 px de altura). A cor do anel continua dizendo o estado, o balão do mascote ganha o resumo `5h · 7d · ctx · sub`, e um **selo com "!"** no anel avisa quando o maior entre 5 h, 7 dias e contexto chega a 75% (âmbar) ou a 90% (vermelho). A escolha fica salva.
 - **Arraste** na vertical (mais de 3 px) para mudar a posição. **Botão direito:** "Reduzir" ou "Expandir", "Fixar balão" ou "Soltar balão", "Reduzir movimento" (marcável) e "Fechar".
 - Em **Aguardando você** (alerta) o balão do mascote abre sozinho, com o pedido em até 3 linhas. Um clique no widget dispensa o balão; ele só reabre num alerta novo.
@@ -147,7 +146,7 @@ Campos do JSON por estado: `name` (nome completo, título do balão), `short` (n
 - **Variável `h` no JSX**: o JSX do mod usa `h` como fábrica. Nunca nomeie um parâmetro `h` (ex.: `.map(h => ...)`), senão dá `h is not a function`.
 - **Mudou o `St`?** Troque a tag `shape` do atom em `register.tsx` (hoje `st-7`), senão o estado guardado pela versão antiga volta.
 - **Sem API para apagar arquivo no mod**: sessão encerrada vira `offline: true` e quem apaga o arquivo é o widget.
-- **Janela que nunca fica ativa** (`Cw.NForm`, `WS_EX_NOACTIVATE`): o menu de contexto não fecha sozinho ao clicar fora, então há um fechamento manual por clique fora do widget.
+- **Janela que nunca fica ativa** (`Cw.NForm`, `WS_EX_NOACTIVATE`): o menu de contexto não fecha sozinho ao clicar fora, então há um fechamento manual por clique fora do widget (o mesmo vale para o balão fixado: o clique em outra janela é detectado com `GetAsyncKeyState`).
 - **Validador estático**: `$` só pode ser passado para funções declaradas no topo do arquivo (`function f($, ...)`), não para closures dentro de `register`.
 - **PowerShell 5.1 lê `.ps1` sem BOM como ANSI**: salve `claudinho-widget.ps1` em UTF-8 **com BOM**, senão os acentos quebram.
 - **Fontes em pixels**: o widget é DPI-aware e usa `ScaleTransform`; as fontes são criadas em `GraphicsUnit.Pixel` (função `F`), senão o texto sai 2,25× maior.
@@ -155,6 +154,8 @@ Campos do JSON por estado: `name` (nome completo, título do balão), `short` (n
 - Para tirar prints do widget via PowerShell, chame `SetProcessDPIAware()` antes, senão a captura vem cortada na escala errada.
 - **Region**: a janela é só a faixa quando o balão está fechado; com o balão aberto cresce para a esquerda e a `Region` é a união das duas formas (o vão da seta fica de fora). Ela só é recriada quando a geometria muda; a antiga é descartada.
 - **Variáveis do PowerShell não diferenciam maiúsculas**: `$trk` e `$TRK` são a mesma. Dentro do `Paint` não reuse nomes de variáveis da paleta global.
+- **Timer de quadros (`Cw.Pulse`)**: o `Timer` do WinForms arredonda para o tick do sistema (~15,6 ms), então 33 ms viravam ~47 ms (21 fps); `timeBeginPeriod` não muda isso. A `Pulse` conta o tempo numa thread própria (com `timeBeginPeriod(1)`) e dispara `Tick` na thread da janela via `BeginInvoke`, um por vez.
+- **Camada fixa em bitmap**: o custo do `Paint` é o interpretador do PowerShell, não o GDI+. Fundo, nome, linhas de uso e balão são desenhados num bitmap (em pixels do dispositivo, opaco para o ClearType sair igual) só quando a forma, o estado ou o item aberto mudam, ou a cada segundo nos balões com tempos; cada quadro copia o bitmap e desenha só anel, mascote, selo e a barra de subagentes. Algo novo que dependa do tempo precisa entrar na chave (`$lk`) ou no trecho animado do `Paint`.
 
 ## Ideias para continuar
 

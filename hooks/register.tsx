@@ -8,7 +8,7 @@ import { MASCOTS } from './mascots'
 // Tipo do `$` dos hooks (o mesmo em todos os eventos).
 type Dollar = Parameters<Hook<'session.start'>>[0]
 
-// Launcher e pasta de estado ficam relativos a $.plugin.root (nada fixo por usuario).
+// Launcher relativo a $.plugin.root; estado em pasta fixa ~/.claude/claudinho/state (nada fixo por usuario).
 const widgetCmd = ($: Dollar): string => `${$.plugin.root}/widget/iniciar-widget.cmd`
 // O widget grava o próprio PID em ~/.claude/claudinho-widget.pid; só ele é encerrado (e só se ainda for um powershell).
 const STOP_ARGV = [
@@ -82,13 +82,26 @@ async function resumeMain($: Dollar) {
 }
 
 // Um arquivo por sessão: o widget lista a pasta e usa `ts` como heartbeat.
-const stateFile = ($: Dollar, sid: string): string => `${$.plugin.root}/state/${sid}.json`
+// Pasta fixa (não muda com a versão do plugin): %USERPROFILE%\.claude\claudinho\state.
+async function stateFile($: Dollar, sid: string): Promise<string | undefined> {
+  const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME'))
+  return home ? `${home.replace(/\\/g, '/')}/.claude/claudinho/state/${sid}.json` : undefined
+}
+
+// Sessões já encerradas: publish tardio (timer, tick em andamento, spawn) não ressuscita o arquivo.
+const ended = new Set<string>()
+// Timer pendente do backToThinking (cancelado no session.end).
+let pendingBack: { cancel: () => void } | undefined
+// Falha de escrita é avisada uma vez por sequência de falhas, não a cada tick.
+let writeWarned = false
 
 // Publica o estado já "desenhado" num JSON para o widget externo (claudinho-widget.ps1).
 // offline = sessão encerrada (o widget tira a sessão da lista).
 async function publish($: Dollar, offline = false, sidOverride = '') {
-  const s: St = await read($, st)
   const sid = sidOverride || String(await $.session.id())
+  if (offline) ended.add(sid)
+  else if (ended.has(sid)) return
+  const s: St = await read($, st)
   const name = ((await $.store.get('mascot')) as string) || 'coral'
   const m = MASCOTS[name] ?? MASCOTS.coral!
   const now = await $.clock.now()
@@ -113,8 +126,21 @@ async function publish($: Dollar, offline = false, sidOverride = '') {
     top: Object.entries(s.counts).sort((a, b) => b[1] - a[1]).slice(0, 5),
     history: s.history.slice(-6).reverse().map(h => ({ t: h.t, text: h.text })),
   }
-  // $.fs.write cria a pasta state/ se não existir
-  await $.fs.write(stateFile($, sid), JSON.stringify(out)).catch(() => undefined)
+  // a sessão pode ter acabado durante os awaits acima
+  if (!offline && ended.has(sid)) return
+  // $.fs não tem rename/delete: escrita direta, não atômica.
+  // $.fs.write cria a pasta se não existir.
+  try {
+    const file = await stateFile($, sid)
+    if (!file) throw new Error('USERPROFILE/HOME não definidos')
+    await $.fs.write(file, JSON.stringify(out))
+    writeWarned = false
+  } catch (err) {
+    if (!writeWarned) {
+      writeWarned = true
+      try { $.ui.log(`claudinho: falha ao gravar estado do widget: ${String(err)}`) } catch { /* nunca lança */ }
+    }
+  }
 }
 
 // Atualiza o estado + a linha de status (plano B, sempre visível).
@@ -141,8 +167,11 @@ async function backToThinking($: Dollar, tool: string) {
   const now = await $.clock.now()
   const wait = 1500 - (now - cur.since)
   const since = cur.since
+  pendingBack?.cancel()
+  pendingBack = undefined
   if ((cur.mode === 'coding' || cur.mode === 'reading') && wait > 0) {
-    $.clock.after(wait, async () => {
+    pendingBack = $.clock.after(wait, async () => {
+      pendingBack = undefined
       const again = await read($, st)
       if (again.since === since) await setMode($, 'thinking', `resultado de ${tool}`)
     })
@@ -206,9 +235,24 @@ export const register: Register = on => {
 
   // Sem API para apagar arquivo: marca a sessão encerrada como offline. Em /clear o processo
   // continua com outro id (e sem session.start): marca só o id antigo e mantém o tick.
+  // Publish tardio do id antigo vira no-op (ver `ended` em publish).
   on('session.end', async ($, e, next) => {
     if (e.reason !== 'clear') cancelTick?.()
+    pendingBack?.cancel()
+    pendingBack = undefined
     await publish($, true, e.sessionId).catch(() => undefined) // nunca impede a saída
+    if (e.reason === 'clear') {
+      // conversa nova: zera contagens/histórico, mas mantém os limites (são da conta)
+      try {
+        const now = await $.clock.now()
+        await update($, st, (s: St) => ({ ...INITIAL, counts: {}, history: [], sessionStart: now, since: now, limits: s.limits ?? [] }))
+        agentSig = ''
+        subAsk = false
+        // se o id novo já valer, publica agora; senão o heartbeat do tick publica
+        await publish($)
+        publishedAt = now
+      } catch { /* nunca impede o /clear */ }
+    }
     return next(e)
   })
 
