@@ -30,13 +30,13 @@ O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps 
 |---|---|
 | `prompt.submit` | 🧠 **Pensando** (zera o relógio do turno) |
 | `tool.call` (Edit, Write, Bash, PowerShell, outros) | 💻 **Codando** e conta a ferramenta (top 5, histórico) |
-| `tool.call` (Read, Grep, Glob, LS, WebSearch, WebFetch) | 🔍 **Lendo/pesquisando** |
+| `tool.call` (Read, Grep, Glob, LS, WebSearch, WebFetch) | 🔍 **Lendo/pesquisando** (cor própria, roxa) |
 | `tool.call` (AskUserQuestion, ExitPlanMode) | 🟡 **Aguardando você** (em alerta) |
 | `classic.PermissionRequest` | 🟡 **Aguardando você** (em alerta: precisa de permissão) |
 | `classic.Notification` | 🟡 **Aguardando você** (em alerta, exceto `idle_prompt`) |
 | `classic.PostToolUse` | volta a 🧠 Pensando; mantém Codando/Lendo visível por pelo menos 1,5 s |
 | `classic.PostToolUseFailure` | ❌ **Erro** por 4 s |
-| `classic.Stop` | ✅ **Terminou** por 4 s, depois 🟡 "sua vez" (sem alerta) |
+| `classic.Stop` | ✅ **Terminou** por 4 s, depois 💬 **Sua vez** (neutro, sem alerta) |
 | `turn.complete` | acumula tokens, lê contexto % e custo |
 | timer de 1 s | 2 min sem atividade viram 😴 **Ocioso**; fim do flash de ✅/❌ |
 
@@ -45,7 +45,7 @@ O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps 
 | Dado | Fonte |
 |---|---|
 | Tokens (entrada, saída, cache) | `usage` do evento `turn.complete`, somado a cada turno (inclui subagentes). Só aparece depois do 1º turno. |
-| Contexto % e custo US$ | `$.session.usage()`. Se o motor não informar, o widget mostra `n/d` e **não inventa número**. |
+| Contexto % e custo US$ | `$.session.usage()`. Se o motor não informar, o widget mostra "sem dados" e **não inventa número**. |
 | Duração da sessão e do turno | relógio do mod (`$.clock`) |
 | Top 5 ferramentas e últimas ações | contadas pelo próprio mod a partir de `tool.call` |
 | Linha de status (plano B) | `$.ui.status()` a cada mudança de estado |
@@ -67,11 +67,14 @@ O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps 
 | Comando | O que faz |
 |---|---|
 | `/claudinho on` | abre o widget na borda direita (fecha um anterior, para não duplicar) |
-| `/claudinho off` | fecha o widget |
+| `/claudinho off` | fecha o widget (também dá para fechar pelo menu do botão direito) |
 | `/claudinho lista` | lista os mascotes |
 | `/claudinho mascote azul` | troca a paleta (`coral`, `azul`, `verde`) |
 
 **Widget:** clique recolhe/expande; arraste para cima/baixo para mudar a altura; botão direito abre o menu (Expandir/recolher, Fechar). Ele começa recolhido.
+Não há botão X na superfície: para fechar use o menu do botão direito ou `/claudinho off`.
+O painel só recolhe sozinho quando a expansão foi automática; se você expandiu com um clique, ele fica aberto.
+O custo aparece junto de entrada/saída. A redução de movimento segue a configuração de animações do Windows, além de `CW_REDUCE_MOTION=1`.
 Para abrir com o Windows, coloque um atalho de `widget/iniciar-widget.cmd` em `shell:startup`.
 Para rodar sem o Claude: `powershell -STA -File widget\claudinho-widget.ps1` (use `$env:CW_EXPAND=1` para já iniciar expandido).
 
@@ -85,9 +88,23 @@ Para rodar sem o Claude: `powershell -STA -File widget\claudinho-widget.ps1` (us
 | 🧠 Pensando | passeia devagar olhando para cima, bolinhas pulsando |
 | 💻 Codando | trota no lugar sobre um teclado, símbolos `{ } ; =>` subindo |
 | 🔍 Lendo | passeia com uma lupa na ponta da vareta |
+| 💬 Sua vez | calmo, sem alerta (cor neutra) |
 | 🟡 Aguardando você | pula, vareta balança, balão amarelo "!" e borda/brilho pulsando |
 | ✅ Terminou | pulinho com brilhos |
 | ❌ Erro | treme com olhos em X |
+
+Campos do JSON por estado: `name` (nome completo), `short` (nome curto para o widget recolhido, cabe em ~78 px) e `labelShort` (label curto: alvo da ferramenta, como `claudinho-state.json`, ou o próprio label).
+
+| Estado | `name` | `short` | cor |
+|---|---|---|---|
+| Ocioso | Ocioso | Ocioso | `#7d7a76` |
+| Pensando | Pensando | Pensando | `#6cc4e8` |
+| Codando | Codando | Codando | `#d97757` |
+| Lendo | Lendo/pesquisando | Lendo | `#a78bfa` |
+| Sua vez (`waiting`, `loud=false`) | Sua vez | Sua vez | `#faf9f5` |
+| Aguardando você (`waiting`, `loud=true`) | Aguardando você | Responda | `#f5c542` |
+| Terminou | Terminou | Terminou | `#5fd38d` |
+| Erro | Erro | Erro | `#ff5f56` |
 
 O asterisco giratório `· ✢ ✳ ✶ ✻ ✽` (igual ao spinner do terminal) fica ao lado do nome do estado enquanto o agente trabalha.
 
@@ -112,5 +129,4 @@ O asterisco giratório `· ✢ ✳ ✶ ✻ ✽` (igual ao spinner do terminal) f
 
 - Detectar "permissão concedida" para sair do 🟡 na hora.
 - Iniciar o widget automaticamente no `session.start` (hoje é manual, via `/claudinho on`).
-- Lembrar posição e se estava expandido entre execuções.
 - Notificação sonora (`$.audio.play`) quando entrar em 🟡 em alerta.

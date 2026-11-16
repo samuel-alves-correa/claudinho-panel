@@ -25,6 +25,10 @@ export type St = {
   /** tokens usados e janela de contexto (so se session.usage informar) */
   ctxTok: number | null
   ctxWin: number | null
+  /** label curto para o widget recolhido (alvo da ferramenta, ou o próprio label) */
+  labelShort: string
+  /** modelo de cada subagente (id -> modelo), anotado no agent.spawn; guarda os 20 últimos */
+  agentModels: Record<string, string>
 }
 
 declare module 'claude-code' {

@@ -19,10 +19,11 @@ const INITIAL: St = {
   sessionStart: 0, turnStart: 0, flashUntil: 0,
   inTok: 0, outTok: 0, cacheTok: 0, hasUsage: false,
   ctxPct: null, usd: null, counts: {}, history: [],
-  waitSince: 0, ask: '', ctxTok: null, ctxWin: null,
+  waitSince: 0, ask: '', ctxTok: null, ctxWin: null, labelShort: 'Ocioso',
+  agentModels: {},
 }
 // Troque a tag quando mudar os campos de St: ela descarta o que a versão antiga guardou.
-const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-2' })
+const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-4' })
 
 const READ = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch'])
 const ASK = new Set(['AskUserQuestion', 'ExitPlanMode'])
@@ -35,9 +36,18 @@ const EMOJI: Record<Mode, string> = {
   waiting: '🟡', coding: '💻', thinking: '🧠', reading: '🔍', idle: '😴', done: '✅', error: '❌',
 }
 const COLOR: Record<Mode, string> = {
-  waiting: '#f5c542', coding: '#d97757', thinking: '#6cc4e8', reading: '#6cc4e8',
+  waiting: '#f5c542', coding: '#d97757', thinking: '#6cc4e8', reading: '#a78bfa',
   idle: '#7d7a76', done: '#5fd38d', error: '#ff5f56',
 }
+const SHORT: Record<Mode, string> = {
+  waiting: 'Responda', coding: 'Codando', thinking: 'Pensando', reading: 'Lendo',
+  idle: 'Ocioso', done: 'Terminou', error: 'Erro',
+}
+// waiting sem loud = "sua vez" (neutro); com loud = permissão/pergunta pendente (amarelo, alerta)
+const nameOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !loud ? 'Sua vez' : NAMES[mode])
+const colorOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !loud ? '#faf9f5' : COLOR[mode])
+const emojiOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !loud ? '💬' : EMOJI[mode])
+const shortOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !loud ? 'Sua vez' : SHORT[mode])
 
 function detail(tool: string, e: Record<string, unknown>): string {
   const s = (v: unknown) => (typeof v === 'string' ? v : '')
@@ -85,6 +95,22 @@ const dur = (ms: number) => {
 }
 const k = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n))
 
+// "claude-fable-5-2" -> "Fable 5.2"; o que não reconhecer passa como está.
+function prettyModel(id: string): string {
+  const m = id.replace(/^claude-/, '').replace(/-\d{8}$/, '')
+  const p = /^([a-z]+)-(\d+)(?:-(\d+))?(.*)$/.exec(m)
+  if (!p) return id
+  const fam = p[1] ?? ''
+  return `${fam.charAt(0).toUpperCase()}${fam.slice(1)} ${p[2]}${p[3] ? '.' + p[3] : ''}${p[4] ?? ''}`
+}
+
+// Subagentes/teammates que ainda estão rodando (terminados saem da lista).
+const ACTIVE = new Set(['pending', 'running', 'waiting'])
+async function activeAgents($: any): Promise<{ id: string; type: string; desc: string }[]> {
+  const list = ((await $.agent.list().catch(() => [])) ?? []) as { id: string; type: string; description: string; status: string }[]
+  return list.filter(a => ACTIVE.has(a.status)).map(a => ({ id: a.id, type: a.type, desc: a.description }))
+}
+
 // O widget le este mesmo arquivo (iniciar-widget.cmd passa -StateFile; o padrao do .ps1 e o mesmo caminho).
 const stateFile = ($: any): string => `${$.plugin.root}/claudinho-state.json`
 
@@ -96,9 +122,16 @@ async function publish($: any) {
   const now = await $.clock.now()
   const cwd: string = (await $.session.cwd().catch(() => '')) || ''
   const project = cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
+  const model = prettyModel(String((await $.session.model().catch(() => '')) || ''))
+  const agents = (await activeAgents($)).map(a => {
+    const am = s.agentModels[a.id]
+    return { type: a.type, desc: a.desc, model: am ? prettyModel(am) : '' }
+  })
   const out = {
-    project, ts: now, mode: s.mode, loud: s.loud, label: s.label, name: NAMES[s.mode], emoji: EMOJI[s.mode],
-    color: COLOR[s.mode], frame: s.frame, rows: sprite(s.mode, s.frame), palette: m.palette,
+    model, agents,
+    project, ts: now, mode: s.mode, loud: s.loud, label: s.label, labelShort: s.labelShort || s.label,
+    name: nameOf(s.mode, s.loud), short: shortOf(s.mode, s.loud), emoji: emojiOf(s.mode, s.loud),
+    color: colorOf(s.mode, s.loud), frame: s.frame, rows: sprite(s.mode, s.frame), palette: m.palette,
     sessionStart: s.sessionStart, turnStart: s.turnStart,
     tokens: s.hasUsage ? { in: s.inTok, out: s.outTok, cache: s.cacheTok } : null,
     ctxPct: s.ctxPct, usd: s.usd, ctxTok: s.ctxTok, ctxWin: s.ctxWin,
@@ -113,7 +146,8 @@ async function publish($: any) {
 async function setMode($: any, mode: Mode, label: string, extra: Partial<St> = {}, loud = false) {
   const now = await $.clock.now()
   await update($, st, (s: St) => ({
-    ...s, mode, loud, label, since: now,
+    ...s, mode, loud, label, labelShort: extra.labelShort ?? label, since: now,
+    sessionStart: s.sessionStart || now,
     // waitSince reinicia ao entrar em waiting (ou ao trocar entre loud e nao-loud)
     waitSince: mode === 'waiting' ? (s.mode === 'waiting' && s.loud === loud ? s.waitSince : now) : 0,
     ask: mode === 'waiting' ? (extra.ask ?? (s.mode === 'waiting' ? s.ask : '')) : '',
@@ -121,11 +155,13 @@ async function setMode($: any, mode: Mode, label: string, extra: Partial<St> = {
     flashUntil: mode === 'done' || mode === 'error' ? now + FLASH_MS : 0,
   }))
   await publish($)
-  $.ui.status(`${EMOJI[mode]} ${NAMES[mode]}${label && label !== NAMES[mode] ? ' — ' + label : ''}`)
+  const nm = nameOf(mode, loud)
+  $.ui.status(`${emojiOf(mode, loud)} ${nm}${label && label !== nm ? ' — ' + label : ''}`)
 }
 
 export const register: Register = on => {
   let cancelTick: (() => void) | undefined
+  let agentSig = ''
 
   const log = (s: St, now: number, text: string) => [...s.history, { t: now, text }].slice(-8)
 
@@ -145,12 +181,31 @@ export const register: Register = on => {
       } else if (s.mode === 'waiting' && !s.loud && n - s.since > IDLE_AFTER_MS) {
         await setMode($, 'idle', 'sem atividade')
       }
+      // subagente começou ou terminou: republica para o widget atualizar a lista
+      const sig = (await activeAgents($)).map(a => a.id).join(',')
+      if (sig !== agentSig) { agentSig = sig; await publish($) }
     })
     cancelTick = () => t.cancel()
     return next(e)
   })
 
   on('session.end', async ($, e, next) => { cancelTick?.(); return next(e) })
+
+  // subagente iniciado: anota em qual modelo ele roda (a lista de agentes não traz o modelo)
+  on('agent.spawn', async ($, e, next) => {
+    const r = await next(e)
+    try {
+      const id = (r as { agentId?: string }).agentId
+      const mdl = (r as { model?: string }).model
+      if (id && mdl) {
+        await update($, st, (s: St) => ({
+          ...s, agentModels: Object.fromEntries([...Object.entries(s.agentModels ?? {}), [id, mdl] as [string, string]].slice(-20)),
+        }))
+        await publish($)
+      }
+    } catch { /* só informativo: nunca atrapalha o spawn */ }
+    return r
+  })
 
   // prompt enviado -> Pensando
   on('prompt.submit', async ($, e, next) => {
@@ -169,8 +224,10 @@ export const register: Register = on => {
       ...s, counts: { ...s.counts, [tool]: (s.counts[tool] ?? 0) + 1 }, history: log(s, now, withTarget(tool, rec)),
     }))
     if (ASK.has(tool)) await setMode($, 'waiting', `${tool} — responda no chat`, { ask: `${tool} · ${tool === 'ExitPlanMode' ? 'aprovar plano' : 'pergunta'}` }, true)
-    else if (READ.has(tool)) await setMode($, 'reading', text)
-    else await setMode($, 'coding', text)
+    else {
+      const labelShort = target(rec) || tool
+      await setMode($, READ.has(tool) ? 'reading' : 'coding', text, { labelShort })
+    }
     return next(e)
   })
 

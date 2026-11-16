@@ -25,7 +25,13 @@ $script:modeT0 = 0.0
 $script:expanded = [bool]$env:CW_EXPAND
 $script:A = 255; $script:prog = 0.0; $script:e = 0.0; $script:lastT = 0.0
 $script:lastAct = 0.0; $script:prevLoud = $false; $script:lastChk = -1.0; $script:hOpen = 440.0
-$script:rm = $false; $script:reduce = ($env:CW_REDUCE_MOTION -eq '1'); $script:hovC = $false
+$script:rm = $false; $script:reduce = ($env:CW_REDUCE_MOTION -eq '1'); $script:hovC = $false; $script:autoExp = $false
+# respeita "Efeitos de animacao" do Windows (SPI_GETCLIENTAREAANIMATION = 0x1042)
+try {
+  Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint a, uint b, ref int c, uint d);' -Name Sp -Namespace Cw
+  $anim = 1
+  if ([Cw.Sp]::SystemParametersInfo(0x1042, 0, [ref]$anim, 0) -and $anim -eq 0) { $script:reduce = $true }
+} catch { }
 $W_OPEN = 240; $H_OPEN = 440; $W_SHUT = 104; $H_SHUT = 104
 $script:curW = [double]$W_SHUT; $script:curH = [double]$H_SHUT
 
@@ -69,11 +75,10 @@ function DockPath([single]$w, [single]$h, [single]$r) {
 
 function F([string]$n,[double]$pt,$st='Regular'){ New-Object System.Drawing.Font($n,[single]($pt*96/72),[System.Drawing.FontStyle]$st,[System.Drawing.GraphicsUnit]::Pixel) }
 $fTitle = (F 'Georgia' 15 'Bold')
-$fName = (F 'Georgia' 9 'Bold')
+$fName = (F 'Segoe UI' 9 'Bold')
 $fBrand = (F 'Georgia' 11 'Bold')
 $fBody = (F 'Segoe UI' 9.5)
 $fSmall = (F 'Segoe UI' 9)
-$fTiny = (F 'Segoe UI' 9)
 $fChev = (F 'Segoe UI' 18 'Bold')
 $fMono = (F 'Consolas' 9)
 $fMonoB = (F 'Consolas' 11 'Bold')
@@ -93,7 +98,7 @@ function Dur($ms) {
   if ($m -ge 60) { '{0}h{1:00}' -f [math]::Floor($m / 60), ($m % 60) } else { '{0}:{1:00}' -f $m, ($t % 60) }
 }
 # tempo relativo curto: agora / 2 min / 1 h
-function Rel($nowMs, $t) { $d = [math]::Max(0, ($nowMs - [double]$t) / 1000); if ($d -lt 60) { 'agora' } elseif ($d -lt 3600) { '{0} min' -f [math]::Floor($d / 60) } else { '{0} h' -f [math]::Floor($d / 3600) } }
+function Rel($nowMs, $t) { $d = [math]::Max(0, ($nowMs - [double]$t) / 1000); if ($d -lt 5) { 'agora' } elseif ($d -lt 60) { '{0} s' -f [math]::Floor($d) } elseif ($d -lt 3600) { '{0} min' -f [math]::Floor($d / 60) } else { '{0} h' -f [math]::Floor($d / 3600) } }
 # numero curto sem casas inuteis: 70k, 1M
 function KS($n) { if ($n -ge 1e6) { '{0:0.#}M' -f ($n / 1e6) } elseif ($n -ge 1e3) { '{0:0}k' -f ($n / 1e3) } else { "$n" } }
 function K($n) { if ($n -ge 1e6) { '{0:N2}M' -f ($n / 1e6) } elseif ($n -ge 1e3) { '{0:N1}k' -f ($n / 1e3) } else { "$n" } }
@@ -236,7 +241,7 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $s, [double]$t, [
   }
   if ($lens) {
     $g.SmoothingMode = 'AntiAlias'
-    $g.DrawEllipse((Pn '#6cc4e8' ([single](0.9 * $u))), [single](11.5 * $u), [single](-17.5 * $u), [single](7 * $u), [single](7 * $u))
+    $g.DrawEllipse((Pn ([string]$s.color) ([single](0.9 * $u))), [single](11.5 * $u), [single](-17.5 * $u), [single](7 * $u), [single](7 * $u))
     $g.DrawLine((Pn '#9b9b9b' ([single](0.9 * $u))), [single](12 * $u), [single](-10 * $u), [single](13.4 * $u), [single](-11.4 * $u))
   }
   $g.Restore($st)
@@ -338,36 +343,31 @@ $form.Add_MouseMove({
     if ([math]::Abs($dy) -gt 3 -or $script:moved) { $script:moved = $true; $script:top += $dy; Apply-Size }
   }
 })
-# alvos de clique em px logicos: X (28x28) e chevron (28x28) separados por 8 px no expandido
-function CloseRect { if ($script:e -gt 0.5) { @(($form.Width / $script:S - 70), 4, 28, 28) } else { @(5, 5, 28, 28) } }
+# alvo de clique em px logicos: chevron (28x28) no expandido
 function ChevRect { @(($form.Width / $script:S - 34), 4, 28, 28) }
-function InClose($px, $py) { $c = CloseRect; $xx = $px / $script:S; $yy = $py / $script:S; ($xx -ge $c[0] -and $xx -le ($c[0] + $c[2]) -and $yy -ge $c[1] -and $yy -le ($c[1] + $c[3])) }
 function InChev($px, $py) { if ($script:e -le 0.5) { return $false }; $c = ChevRect; $xx = $px / $script:S; $yy = $py / $script:S; ($xx -ge $c[0] -and $xx -le ($c[0] + $c[2]) -and $yy -ge $c[1] -and $yy -le ($c[1] + $c[3])) }
-$script:hov = $false
 $form.Add_MouseUp({
   if ($_.Button -eq 'Left') {
     if ($script:moved) { Save-Cfg }
-    elseif (InClose $_.X $_.Y) { $form.Close(); return }
-    elseif (-not $script:expanded -or ($_.Y / $script:S) -lt 40) { $script:expanded = -not $script:expanded; $script:userExp = $script:expanded; Save-Cfg }
+    elseif (-not $script:expanded -or ($_.Y / $script:S) -lt 40) { $script:expanded = -not $script:expanded; $script:userExp = $script:expanded; $script:autoExp = $false; Save-Cfg }
   }
   $script:lastAct = $script:sw.Elapsed.TotalSeconds
   $script:down = $null; $script:moved = $false
 })
 $form.Add_FormClosing({ Save-Cfg })
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$null = $menu.Items.Add('Expandir / recolher', $null, { $script:expanded = -not $script:expanded; $script:userExp = $script:expanded; Save-Cfg })
+$null = $menu.Items.Add('Expandir / recolher', $null, { $script:expanded = -not $script:expanded; $script:userExp = $script:expanded; $script:autoExp = $false; Save-Cfg })
 $null = $menu.Items.Add('Fechar', $null, { $form.Close() })
 $form.ContextMenuStrip = $menu
 $script:hits = @(); $script:tipTxt = ''
 $tip = New-Object System.Windows.Forms.ToolTip
 $tip.InitialDelay = 400
 $form.Add_MouseMove({
-  $script:hov = (InClose $_.X $_.Y)
   $script:hovC = (InChev $_.X $_.Y)
-  $yy = $_.Y / $script:S; $txt = $(if ($script:hov) { 'Fechar o Claudinho' } elseif ($script:hovC) { 'Recolher' } else { '' })
-  $form.Cursor = $(if ($script:hov -or $script:hovC) { [System.Windows.Forms.Cursors]::Hand } elseif ($yy -lt 40) { [System.Windows.Forms.Cursors]::SizeNS } else { [System.Windows.Forms.Cursors]::Default })
-  if (-not $script:hov -and -not $script:hovC) {
-  foreach ($h in $script:hits) { if ($yy -ge $h[0] -and $yy -le $h[1]) { $txt = [string]$h[2]; break } }
+  $yy = $_.Y / $script:S; $txt = $(if ($script:hovC) { 'Recolher' } else { '' })
+  $form.Cursor = $(if (-not $script:expanded -or $yy -lt 40) { [System.Windows.Forms.Cursors]::Hand } else { [System.Windows.Forms.Cursors]::Default })
+  if (-not $script:hovC) {
+    foreach ($h in $script:hits) { if ($yy -ge $h[0] -and $yy -le $h[1]) { $txt = [string]$h[2]; break } }
   }
   if ($txt -ne $script:tipTxt) { $script:tipTxt = $txt; $tip.SetToolTip($form, $txt) }
 })
@@ -419,7 +419,8 @@ $form.Add_Paint({ try {
   if ($e -lt 0.5) {
     # ----- recolhido (some ao expandir) -----
     $script:A = [int](255 * (1 - 2 * $e))
-    $nm = ([string]$s.name -split '/')[0]
+    $nm = $(if ($s.short) { [string]$s.short } else { ([string]$s.name -split '/')[0] })
+    $lbl = $(if ($s.labelShort) { [string]$s.labelShort } else { [string]$s.label })
     $gw = 14
     while ($nm.Length -gt 3 -and $g.MeasureString($nm, $fName).Width -gt ($W - 12 - $gw)) { $nm = $nm.Substring(0, $nm.Length - 2) + '…' }
     $nw = $g.MeasureString($nm, $fName).Width
@@ -427,18 +428,34 @@ $form.Add_Paint({ try {
     $ncol = if ($s.mode -eq 'idle') { $TEXT } else { [string]$s.color }
     $g.DrawString($spin, $fSpinS, (Br $ncol), ($x0 - 2), 67)
     $g.DrawString($nm, $fName, (Br $ncol), ($x0 + $gw), 68)
-    $g.DrawString((ClipW $g ([string]$s.label) $fTiny ($W - 12)), $fTiny, (Br $DIM), [System.Drawing.RectangleF]::new(2, 83, ($W - 4), 16), $center)
-    $script:hits = @(@(0, $H, ($nm + ' · ' + [string]$s.label)))
+    $g.DrawString((ClipW $g $lbl $fSmall ($W - 12)), $fSmall, (Br $DIM), [System.Drawing.RectangleF]::new(2, 83, ($W - 4), 16), $center)
+    # subagentes ativos: selo no canto; modelo vai no tooltip (nao cabe no recolhido)
+    $nag = @($s.agents | Where-Object { $_ }).Count
+    if ($nag -gt 0) {
+      $bt = "$nag sub"; $bwd = $g.MeasureString($bt, $fSmall).Width + 8
+      $g.FillPath((Br '#34332f'), (RoundPath 6 6 $bwd 18 9))
+      $g.DrawString($bt, $fSmall, (Br $TEXT), 10, 7)
+    }
+    $tipC = (([string]$s.name -split '/')[0] + ' · ' + [string]$s.label)
+    if ($s.model) { $tipC += ' · ' + [string]$s.model }
+    if ($nag -gt 0) { $tipC += ' · ' + $(if ($nag -eq 1) { '1 subagente' } else { "$nag subagentes" }) }
+    $script:hits = @(@(0, $H, $tipC))
   }
   if ($e -gt 0.5) {
     # ----- expandido (aparece aos poucos) -----
     $script:A = [int](255 * (2 * $e - 1))
     $g.FillEllipse((Br $CORAL), 16, 15, 9, 9)
     $proj = [string]$s.project; if (-not $proj) { $proj = 'Claudinho' }
-    $g.DrawString((ClipW $g $proj $fBrand 100), $fBrand, (Br $TEXT), 30, 10)
+    $g.DrawString((ClipW $g $proj $fBrand 92), $fBrand, (Br $TEXT), 30, 10)
     $g.DrawString('›', $fChev, (Br $(if ($script:hovC) { $TEXT } else { '#d6d3cc' })), [System.Drawing.RectangleF]::new(($W - 34), (-2), 28, 32), $center)
 
     $script:hits = @()
+    # modelo da sessao, a direita do nome do projeto
+    $mdl = [string]$s.model
+    if ($mdl) {
+      $g.DrawString((ClipW $g $mdl $fSmall 76), $fSmall, (Br $DIM), [System.Drawing.RectangleF]::new(124, 12, ($W - 124 - 36), 16), $right)
+      $script:hits += , @(0, 30, ('modelo: ' + $mdl))
+    }
     $ncol = if ($s.mode -eq 'idle') { $TEXT } else { [string]$s.color }
     $y = 122
     $g.DrawString($spin, $fSpin, (Br $ncol), 13, ($y + 1))
@@ -477,23 +494,24 @@ $form.Add_Paint({ try {
     $g.FillPath((Br $LINE), (RoundPath 16 $y ($W - 32) 9 4.5))
     if ($null -ne $ctx) {
       $fw = [math]::Max(9, ($W - 32) * [math]::Min(100, $ctx) / 100)
-      $g.FillPath((Br $(if ($ctx -gt 85) { '#ff5f56' } elseif ($ctx -gt 65) { '#f5c542' } else { '#6cc4e8' })), (RoundPath 16 $y $fw 9 4.5))
+      $g.FillPath((Br $(if ($ctx -gt 85) { '#ff5f56' } elseif ($ctx -gt 65) { '#f5c542' } else { '#c9c6be' })), (RoundPath 16 $y $fw 9 4.5))
     }
     $y += 18
     Rect $g $LINE 16 $y ($W - 32) 1; $y += 9
 
-    $cols = @(@('entrada', $(if ($s.tokens) { K $s.tokens.in } else { '—' }), $TEXT), @('saída', $(if ($s.tokens) { K $s.tokens.out } else { '—' }), $TEXT), @('cache', $(if ($s.tokens) { K $s.tokens.cache } else { '—' }), $DIM))
+    $cols = @(@('entrada', $(if ($s.tokens) { K $s.tokens.in } else { '—' }), $TEXT), @('saída', $(if ($s.tokens) { K $s.tokens.out } else { '—' }), $TEXT), @('custo', $(if ($null -ne $s.usd) { '$' + ([double]$s.usd).ToString('N2', [System.Globalization.CultureInfo]::GetCultureInfo('pt-BR')) } else { '—' }), $TEXT))
     $cw = ($W - 32) / 3
     for ($i = 0; $i -lt 3; $i++) {
       $g.DrawString($cols[$i][1], $fMonoB, (Br $cols[$i][2]), (16 + $i * $cw), $y)
-      $g.DrawString($cols[$i][0], $fTiny, (Br $DIM), (16 + $i * $cw), ($y + 17))
+      $g.DrawString($cols[$i][0], $fSmall, (Br $DIM), (16 + $i * $cw), ($y + 17))
     }
     if (-not $s.tokens) { $script:hits += , @($y, ($y + 36), 'tokens aparecem após o 1º turno') }
+    else { $script:hits += , @($y, ($y + 36), ('cache: ' + (K $s.tokens.cache))) }
     $y += 38
 
     $turn = if ($s.mode -in 'thinking', 'coding', 'reading', 'error') { Dur ($nowMs - $s.turnStart) } else { '—' }
-    $usd = if ($null -ne $s.usd) { ' · $' + ([double]$s.usd).ToString('N2', [System.Globalization.CultureInfo]::GetCultureInfo('pt-BR')) } else { '' }
-    $sess = 'sessão {0} · turno {1}{2}' -f (Dur ($nowMs - $s.sessionStart)), $turn, $usd
+    $sdur = if ($s.sessionStart -and [double]$s.sessionStart -gt 0) { Dur ($nowMs - [double]$s.sessionStart) } else { '—' }
+    $sess = 'sessão {0} · turno {1}' -f $sdur, $turn
     $g.DrawString((ClipW $g $sess $fSmall ($W - 28)), $fSmall, (Br $DIM), 16, ($y + 1))
     $y += 20
     Rect $g $LINE 16 $y ($W - 32) 1; $y += 9
@@ -521,12 +539,35 @@ $form.Add_Paint({ try {
       if ($ch[1] + 1 -gt $nrow) { $nrow = $ch[1] + 1 }
       $cy = $y + $ch[1] * 26
       $g.FillPath((Br '#34332f'), (RoundPath $ch[2] $cy $ch[3] 22 11))
-      $g.DrawString($ch[0], $fSmall, (Br $TEXT), ($ch[2] + 6), ($cy + 3))
+      $g.DrawString($ch[0], $fSmall, (Br $DIM), ($ch[2] + 6), ($cy + 3))
     }
     $y += 22 + ($nrow - 1) * 26 + 9
     Rect $g $LINE 16 $y ($W - 32) 1; $y += 9
 
-    $g.DrawString('ATIVIDADE RECENTE', $fTiny, (Br $DIM), 16, $y); $y += 18
+    # subagentes ativos: contagem sempre visivel; ate 3 linhas com descricao e modelo
+    $ags = @($s.agents | Where-Object { $_ })
+    $g.DrawString('SUBAGENTES', $fSmall, (Br $DIM), 16, $y)
+    $agTxt = $(if ($ags.Count -eq 0) { 'nenhum' } elseif ($ags.Count -eq 1) { '1 ativo' } else { "$($ags.Count) ativos" })
+    $g.DrawString($agTxt, $fSmall, (Br $(if ($ags.Count -gt 0) { $TEXT } else { $DIM })), [System.Drawing.RectangleF]::new(0, $y, ($W - 16), 16), $right)
+    $y += 18
+    $shown = 0
+    foreach ($ag in $ags) {
+      if ($shown -ge 3) { break }
+      $agM = [string]$ag.model; $agMW = 0
+      if ($agM) {
+        $agMW = $g.MeasureString($agM, $fSmall).Width + 6
+        $g.DrawString($agM, $fSmall, (Br $DIM), [System.Drawing.RectangleF]::new(0, ($y + 1), ($W - 16), 16), $right)
+      }
+      $agD = [string]$ag.desc; if (-not $agD) { $agD = [string]$ag.type }
+      $g.DrawString((ClipW $g $agD $fSmall ($W - 32 - $agMW)), $fSmall, (Br $TEXT), 16, ($y + 1))
+      $script:hits += , @($y, ($y + 18), ([string]$ag.type + ' · ' + $agD + $(if ($agM) { ' · ' + $agM } else { '' })))
+      $y += 18; $shown++
+    }
+    if ($ags.Count -gt 3) { $g.DrawString(('+' + ($ags.Count - 3) + ' em andamento'), $fSmall, (Br $DIM), 16, ($y + 1)); $y += 18 }
+    $y += 4
+    Rect $g $LINE 16 $y ($W - 32) 1; $y += 9
+
+    $g.DrawString('ATIVIDADE RECENTE', $fSmall, (Br $DIM), 16, $y); $y += 18
     foreach ($h in ($s.history | Select-Object -First 3)) {
       $g.DrawString((Rel $nowMs $h.t), $fMono, (Br $DIM), 16, $y)
       $g.DrawString((ClipW $g ([string]$h.text) $fSmall ($W - 66)), $fSmall, (Br $TEXT), 60, ($y + 1))
@@ -536,13 +577,6 @@ $form.Add_Paint({ try {
     # altura do expandido acompanha o conteudo (timer aplica)
     if ($e -ge 0.99) { $script:hOpen = [math]::Ceiling($y + 12) }
   }
-  # botao fechar (X)
-  $script:A = 255
-  $c = CloseRect
-  if ($script:hov) { $g.FillPath((Br '#ff5f56' 60), (RoundPath $c[0] $c[1] $c[2] $c[3] 6)) }
-  $xc = $(if ($script:hov) { '#ff5f56' } else { '#7d7a76' })
-  $cx2 = $c[0] + $c[2] / 2; $cy2 = $c[1] + $c[3] / 2; $ar = $c[2] * 0.18
-  $g.DrawLine((Pn $xc 1.8), ($cx2 - $ar), ($cy2 - $ar), ($cx2 + $ar), ($cy2 + $ar)); $g.DrawLine((Pn $xc 1.8), ($cx2 - $ar), ($cy2 + $ar), ($cx2 + $ar), ($cy2 - $ar))
   $script:A = 255
 } catch { Add-Content "$env:TEMP\cw-log.txt" ("PAINT: " + $_.Exception.Message + " @ " + $_.InvocationInfo.ScriptLineNumber) } finally { foreach ($p2 in $script:pp) { $p2.Dispose() }; $script:pp.Clear() } })
 
@@ -568,8 +602,8 @@ $timer.Add_Tick({
   # auto: expande ao entrar em waiting loud; recolhe apos ~10 s sem mouse (nao mexe no userExp salvo)
   $loudNow = [bool]($script:state -and $script:state.mode -eq 'waiting' -and $script:state.loud)
   if ($form.Bounds.Contains([System.Windows.Forms.Cursor]::Position) -or $script:down) { $script:lastAct = $now }
-  if ($loudNow -and -not $script:prevLoud -and -not $script:expanded) { $script:expanded = $true; $script:lastAct = $now; if ($script:rm) { $script:prog = 1.0 } }
-  elseif (-not $env:CW_EXPAND -and $script:expanded -and -not $loudNow -and ($now - $script:lastAct) -gt 10) { $script:expanded = $false; if ($script:rm) { $script:prog = 0.0 } }
+  if ($loudNow -and -not $script:prevLoud -and -not $script:expanded) { $script:expanded = $true; $script:autoExp = $true; $script:lastAct = $now; if ($script:rm) { $script:prog = 1.0 } }
+  elseif (-not $env:CW_EXPAND -and $script:autoExp -and $script:expanded -and -not $loudNow -and ($now - $script:lastAct) -gt 10) { $script:expanded = $false; $script:autoExp = $false; if ($script:rm) { $script:prog = 0.0 } }
   $script:prevLoud = $loudNow
   $tgt = if ($script:expanded) { 1.0 } else { 0.0 }
   $moving = $false
