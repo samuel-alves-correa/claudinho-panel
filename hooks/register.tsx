@@ -1,33 +1,44 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { Hook, Register } from 'claude-code'
 
 import type { Mode, St } from '../types'
-import { MASCOTS, sprite } from './mascots'
+import { detail, ellipsis, limitsOf, prettyModel, ptbr, target, withTarget } from './format'
+import { MASCOTS } from './mascots'
 
-// Launcher e arquivo de estado ficam relativos a $.plugin.root (nada fixo por usuario).
-const widgetCmd = ($: any): string => `${$.plugin.root}/widget/iniciar-widget.cmd`
+// Tipo do `$` dos hooks (o mesmo em todos os eventos).
+type Dollar = Parameters<Hook<'session.start'>>[0]
+
+// Launcher e pasta de estado ficam relativos a $.plugin.root (nada fixo por usuario).
+const widgetCmd = ($: Dollar): string => `${$.plugin.root}/widget/iniciar-widget.cmd`
+// O widget grava o próprio PID em ~/.claude/claudinho-widget.pid; só ele é encerrado (e só se ainda for um powershell).
 const STOP_ARGV = [
   'powershell', '-NoProfile', '-Command',
-  "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -like '*claudinho-widget*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+  "$f = Join-Path $env:USERPROFILE '.claude/claudinho-widget.pid'; if (Test-Path $f) { try { $id = 0; if ([int]::TryParse((Get-Content $f -TotalCount 1).Trim(), [ref]$id)) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'powershell') { Stop-Process -Id $id -Force } } } catch {}; Remove-Item $f -Force -ErrorAction SilentlyContinue }",
 ]
 const IDLE_AFTER_MS = 120_000
 const FLASH_MS = 4_000
 const TICK_MS = 1000
+const HEARTBEAT_MS = 5_000
 const LIMITS_EVERY_MS = 60_000
+const ASK_MAX = 200
 
 const INITIAL: St = {
-  mode: 'idle', loud: false, label: 'Ocioso', since: 0, frame: 0,
-  sessionStart: 0, turnStart: 0, flashUntil: 0,
+  mode: 'idle', loud: false, label: 'Ocioso', since: 0,
+  sessionStart: 0, turnStart: 0, flashUntil: 0, doneAt: 0,
   inTok: 0, outTok: 0, cacheTok: 0, hasUsage: false,
   ctxPct: null, usd: null, counts: {}, history: [],
   waitSince: 0, ask: '', ctxTok: null, ctxWin: null, labelShort: 'Ocioso',
   agentModels: {}, limits: [], busy: false,
 }
 // Troque a tag quando mudar os campos de St: ela descarta o que a versão antiga guardou.
-const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-6' })
+const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-7' })
 
 const READ = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch'])
-const ASK = new Set(['AskUserQuestion', 'ExitPlanMode'])
+// Ferramentas que pedem algo a você: label da linha de status e texto do pedido.
+const ASKS: Record<string, { label: string; ask: string }> = {
+  AskUserQuestion: { label: 'pergunta para você', ask: 'Pergunta para você' },
+  ExitPlanMode: { label: 'plano aguardando aprovação', ask: 'Aprovar o plano' },
+}
 
 const NAMES: Record<Mode, string> = {
   waiting: 'Aguardando você', coding: 'Codando', thinking: 'Pensando',
@@ -50,120 +61,64 @@ const colorOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !l
 const emojiOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !loud ? '💬' : EMOJI[mode])
 const shortOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !loud ? 'Sua vez' : SHORT[mode])
 
-function detail(tool: string, e: Record<string, unknown>): string {
-  const s = (v: unknown) => (typeof v === 'string' ? v : '')
-  const file = s(e.file_path) || s(e.notebook_path)
-  const short = (t: string, n = 38) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
-  if (file) return `${tool} em ${short(file.replace(/\\/g, '/').split('/').slice(-2).join('/'))}`
-  if (s(e.command)) return `${tool}: ${short(s(e.command).split('\n')[0] ?? '', 34)}`
-  if (s(e.pattern)) return `${tool}: ${short(s(e.pattern), 30)}`
-  if (s(e.query)) return `${tool}: ${short(s(e.query), 30)}`
-  if (s(e.url)) return `${tool}: ${short(s(e.url), 30)}`
-  return tool
-}
-
-// Alvo curto (max ~28 chars): arquivo, 2 primeiras palavras do comando, host da url. Sem segredos longos.
-function target(e: Record<string, unknown>): string {
-  const s = (v: unknown) => (typeof v === 'string' ? v : '')
-  const cut = (t: string, n = 28) => (t.length > n ? t.slice(0, n - 1) + '…' : t)
-  const file = s(e.file_path) || s(e.notebook_path)
-  if (file) return cut(file.replace(/\\/g, '/').split('/').pop() ?? '')
-  const cmd = s(e.command)
-  if (cmd) return cut((cmd.split('\n')[0] ?? '').trim().split(/\s+/).slice(0, 2).join(' '))
-  if (s(e.pattern)) return cut(s(e.pattern))
-  if (s(e.query)) return cut(s(e.query))
-  if (s(e.url)) return cut(s(e.url).replace(/^https?:\/\//, '').split('/')[0] ?? '')
-  return ''
-}
-const withTarget = (tool: string, e: Record<string, unknown>) => {
-  const t = target(e)
-  return t ? `${tool} · ${t}` : tool
-}
-// Mensagens comuns do Claude Code em pt-BR; desconhecida passa como está.
-function ptbr(m: string): string {
-  const perm = /needs your permission to use (.+?)\.?$/i.exec(m)
-  if (perm) return `precisa da sua permissão para usar ${perm[1]}`
-  if (/needs your permission/i.test(m)) return 'precisa da sua permissão'
-  if (/waiting for your input/i.test(m)) return 'aguardando sua resposta'
-  return m
-}
-
-const hms = (ms: number) => new Date(ms).toTimeString().slice(0, 8)
-const dur = (ms: number) => {
-  const t = Math.max(0, Math.floor(ms / 1000))
-  const m = Math.floor(t / 60)
-  return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}:${String(t % 60).padStart(2, '0')}`
-}
-const k = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n))
-
-// "claude-fable-5-2" -> "Fable 5.2"; o que não reconhecer passa como está.
-function prettyModel(id: string): string {
-  const m = id.replace(/^claude-/, '').replace(/-\d{8}$/, '')
-  const p = /^([a-z]+)-(\d+)(?:-(\d+))?(.*)$/.exec(m)
-  if (!p) return id
-  const fam = p[1] ?? ''
-  return `${fam.charAt(0).toUpperCase()}${fam.slice(1)} ${p[2]}${p[3] ? '.' + p[3] : ''}${p[4] ?? ''}`
-}
-
-// Janelas de limite de uso como o widget desenha: % usado e quando reinicia (ms epoch; 0 = sem data).
-function limitsOf(usage: any): St['limits'] {
-  const rows = (usage?.rateLimits ?? []) as { kind: string; percentUsed: number; resetsAt?: string }[]
-  return rows.map(r => ({ kind: r.kind, pct: r.percentUsed, resetsAt: r.resetsAt ? Date.parse(r.resetsAt) || 0 : 0 }))
-}
-
 // Subagentes/teammates que ainda estão rodando (terminados saem da lista).
 const ACTIVE = new Set(['pending', 'running', 'waiting'])
-async function activeAgents($: any): Promise<{ id: string; type: string; desc: string }[]> {
+async function activeAgents($: Dollar): Promise<{ id: string; type: string; desc: string }[]> {
   const list = ((await $.agent.list().catch(() => [])) ?? []) as { id: string; type: string; description: string; status: string }[]
   return list.filter(a => ACTIVE.has(a.status)).map(a => ({ id: a.id, type: a.type, desc: a.description }))
 }
 
-// O widget le este mesmo arquivo (iniciar-widget.cmd passa -StateFile; o padrao do .ps1 e o mesmo caminho).
 // Evento vindo do loop de um subagente/teammate (tool.call e turn.complete trazem agentId; os classic, agent_id).
 const fromSub = (e: unknown): boolean => {
   const r = e as { agentId?: string; agent_id?: string }
   return r.agentId !== undefined || r.agent_id !== undefined
 }
 // Subagente destravou um pedido de permissão: volta ao que a conversa principal estava fazendo.
-async function resumeMain($: any) {
+async function resumeMain($: Dollar) {
   const s: St = await read($, st)
   if (!(s.mode === 'waiting' && s.loud)) return
   if (s.busy) await setMode($, 'thinking', 'continuando')
   else await setMode($, 'waiting', 'sua vez de mandar mensagem')
 }
 
-const stateFile = ($: any): string => `${$.plugin.root}/claudinho-state.json`
+// Um arquivo por sessão: o widget lista a pasta e usa `ts` como heartbeat.
+const stateFile = ($: Dollar, sid: string): string => `${$.plugin.root}/state/${sid}.json`
 
 // Publica o estado já "desenhado" num JSON para o widget externo (claudinho-widget.ps1).
-async function publish($: any) {
+// offline = sessão encerrada (o widget tira a sessão da lista).
+async function publish($: Dollar, offline = false, sidOverride = '') {
   const s: St = await read($, st)
+  const sid = sidOverride || String(await $.session.id())
   const name = ((await $.store.get('mascot')) as string) || 'coral'
   const m = MASCOTS[name] ?? MASCOTS.coral!
   const now = await $.clock.now()
   const cwd: string = (await $.session.cwd().catch(() => '')) || ''
   const project = cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
   const model = prettyModel(String((await $.session.model().catch(() => '')) || ''))
-  const agents = (await activeAgents($)).map(a => {
+  const agents = offline ? [] : (await activeAgents($)).map(a => {
     const am = s.agentModels[a.id]
     return { type: a.type, desc: a.desc, model: am ? prettyModel(am) : '' }
   })
+  // "terminou há X" só faz sentido enquanto a sessão está parada depois do turno
+  const showDone = s.mode === 'done' || s.mode === 'idle' || (s.mode === 'waiting' && !s.loud)
   const out = {
-    model, agents, limits: s.limits ?? [],
+    sid, offline, model, agents, limits: s.limits ?? [],
     project, ts: now, mode: s.mode, loud: s.loud, label: s.label, labelShort: s.labelShort || s.label,
-    name: nameOf(s.mode, s.loud), short: shortOf(s.mode, s.loud), emoji: emojiOf(s.mode, s.loud),
-    color: colorOf(s.mode, s.loud), frame: s.frame, rows: sprite(s.mode, s.frame), palette: m.palette,
-    sessionStart: s.sessionStart, turnStart: s.turnStart,
+    name: nameOf(s.mode, s.loud), short: shortOf(s.mode, s.loud),
+    color: colorOf(s.mode, s.loud), palette: m.palette,
+    sessionStart: s.sessionStart, turnStart: s.turnStart, doneAt: showDone ? s.doneAt : 0,
     tokens: s.hasUsage ? { in: s.inTok, out: s.outTok, cache: s.cacheTok } : null,
     ctxPct: s.ctxPct, usd: s.usd, ctxTok: s.ctxTok, ctxWin: s.ctxWin,
     ask: s.mode === 'waiting' ? s.ask : '', waitSince: s.mode === 'waiting' ? s.waitSince : 0,
     top: Object.entries(s.counts).sort((a, b) => b[1] - a[1]).slice(0, 5),
     history: s.history.slice(-6).reverse().map(h => ({ t: h.t, text: h.text })),
   }
-  await $.fs.write(stateFile($),JSON.stringify(out)).catch(() => undefined)
+  // $.fs.write cria a pasta state/ se não existir
+  await $.fs.write(stateFile($, sid), JSON.stringify(out)).catch(() => undefined)
 }
 
 // Atualiza o estado + a linha de status (plano B, sempre visível).
-async function setMode($: any, mode: Mode, label: string, extra: Partial<St> = {}, loud = false) {
+async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> = {}, loud = false) {
   const now = await $.clock.now()
   await update($, st, (s: St) => ({
     ...s, mode, loud, label, labelShort: extra.labelShort ?? label, since: now,
@@ -179,10 +134,28 @@ async function setMode($: any, mode: Mode, label: string, extra: Partial<St> = {
   $.ui.status(`${emojiOf(mode, loud)} ${nm}${label && label !== nm ? ' — ' + label : ''}`)
 }
 
+// Ferramenta da conversa principal terminou (ou falhou): volta a Pensando, mas deixa
+// "Codando/Lendo" visível por pelo menos 1,5 s, senão comandos rápidos nunca aparecem.
+async function backToThinking($: Dollar, tool: string) {
+  const cur = await read($, st)
+  const now = await $.clock.now()
+  const wait = 1500 - (now - cur.since)
+  const since = cur.since
+  if ((cur.mode === 'coding' || cur.mode === 'reading') && wait > 0) {
+    $.clock.after(wait, async () => {
+      const again = await read($, st)
+      if (again.since === since) await setMode($, 'thinking', `resultado de ${tool}`)
+    })
+  } else {
+    await setMode($, 'thinking', `resultado de ${tool}`)
+  }
+}
+
 export const register: Register = on => {
   let cancelTick: (() => void) | undefined
   let agentSig = ''
   let limitsAt = 0
+  let publishedAt = 0
   // o alerta atual veio de um pedido de permissão de subagente (só esse um subagente pode destravar)
   let subAsk = false
 
@@ -193,14 +166,16 @@ export const register: Register = on => {
     await update($, st, () => ({ ...INITIAL, counts: {}, history: [], sessionStart: now, since: now }))
     await $.command.register({ name: 'claudinho', description: 'Widget do Claudinho na borda da tela: on | off | mascote <nome> | lista' })
     await publish($)
+    publishedAt = now
     cancelTick?.()
-    // 1x por segundo, e só mexe no estado quando há transição (nada de redesenhar à toa)
+    // 1x por segundo; só mexe no estado quando há transição e republica a cada 5 s (heartbeat: `ts`)
     const t = $.clock.every(TICK_MS, async () => {
       const n = await $.clock.now()
       const s = await read($, st)
       if ((s.mode === 'done' || s.mode === 'error') && n > s.flashUntil) {
         if (s.mode === 'done') await setMode($, 'waiting', 'sua vez de mandar mensagem')
-        else await setMode($, 'thinking', 'continuando')
+        else if (s.busy) await setMode($, 'thinking', 'continuando')
+        else await setMode($, 'waiting', 'sua vez de mandar mensagem')
       } else if (s.mode === 'waiting' && !s.loud && n - s.since > IDLE_AFTER_MS) {
         await setMode($, 'idle', 'sem atividade')
       }
@@ -208,7 +183,7 @@ export const register: Register = on => {
       const sig = (await activeAgents($)).map(a => a.id).join(',')
       let dirty = sig !== agentSig
       agentSig = sig
-      // limites: relê 1x por minuto, senão o anel só muda quando um turno termina
+      // limites: relê 1x por minuto, senão só mudam quando um turno termina
       if (n - limitsAt >= LIMITS_EVERY_MS) {
         limitsAt = n
         const usage = await $.session.usage().catch(() => undefined)
@@ -220,13 +195,22 @@ export const register: Register = on => {
           }
         }
       }
-      if (dirty) await publish($)
+      if (dirty || n - publishedAt >= HEARTBEAT_MS) {
+        await publish($)
+        publishedAt = n
+      }
     })
     cancelTick = () => t.cancel()
     return next(e)
   })
 
-  on('session.end', async ($, e, next) => { cancelTick?.(); return next(e) })
+  // Sem API para apagar arquivo: marca a sessão encerrada como offline. Em /clear o processo
+  // continua com outro id (e sem session.start): marca só o id antigo e mantém o tick.
+  on('session.end', async ($, e, next) => {
+    if (e.reason !== 'clear') cancelTick?.()
+    await publish($, true, e.sessionId).catch(() => undefined) // nunca impede a saída
+    return next(e)
+  })
 
   // subagente iniciado: anota em qual modelo ele roda (a lista de agentes não traz o modelo)
   on('agent.spawn', async ($, e, next) => {
@@ -244,11 +228,11 @@ export const register: Register = on => {
     return r
   })
 
-  // prompt enviado -> Pensando
+  // prompt enviado -> Pensando (zera o "terminou há X")
   on('prompt.submit', async ($, e, next) => {
     if (fromSub(e)) return next(e)
     const now = await $.clock.now()
-    await setMode($, 'thinking', 'processando sua mensagem', { turnStart: now, busy: true })
+    await setMode($, 'thinking', 'processando sua mensagem', { turnStart: now, busy: true, doneAt: 0 })
     return next(e)
   })
 
@@ -265,9 +249,11 @@ export const register: Register = on => {
     }))
     // ferramenta de subagente: conta e entra no histórico, mas não troca o estado do mascote
     if (sub) { await publish($); return next(e) }
-    if (ASK.has(tool)) subAsk = false
-    if (ASK.has(tool)) await setMode($, 'waiting', `${tool} — responda no chat`, { ask: `${tool} · ${tool === 'ExitPlanMode' ? 'aprovar plano' : 'pergunta'}` }, true)
-    else {
+    const asks = ASKS[tool]
+    if (asks) {
+      subAsk = false
+      await setMode($, 'waiting', asks.label, { ask: asks.ask }, true)
+    } else {
       const labelShort = target(rec) || tool
       await setMode($, READ.has(tool) ? 'reading' : 'coding', text, { labelShort })
     }
@@ -276,9 +262,9 @@ export const register: Register = on => {
 
   // classic.PermissionRequest: o agente parou pedindo permissão
   on('classic.PermissionRequest', async ($, e, next) => {
-    const inp = ((e as any).tool_input ?? {}) as Record<string, unknown>
+    const inp = ((e as { tool_input?: unknown }).tool_input ?? {}) as Record<string, unknown>
     subAsk = fromSub(e)
-    await setMode($, 'waiting', `permissão para ${e.tool_name}`, { ask: withTarget(String(e.tool_name), inp) }, true)
+    await setMode($, 'waiting', `permissão para ${e.tool_name}`, { ask: ellipsis(withTarget(String(e.tool_name), inp), ASK_MAX) }, true)
     return next(e)
   })
   // classic.Notification: avisos do Claude (permissão, "aguardando input")
@@ -287,40 +273,30 @@ export const register: Register = on => {
     const msg = ptbr(e.message)
     // mantem o pedido ja conhecido (ferramenta + alvo) se a permissao veio antes
     const cur = await read($, st)
-    await setMode($, 'waiting', msg.slice(0, 50), loud && !(cur.mode === 'waiting' && cur.loud) ? { ask: msg.slice(0, 40) } : {}, loud)
+    await setMode($, 'waiting', ellipsis(msg, 50), loud && !(cur.mode === 'waiting' && cur.loud) ? { ask: ellipsis(msg, ASK_MAX) } : {}, loud)
     return next(e)
   })
   // classic.PostToolUse: ferramenta terminou -> volta a Pensando (modelo lê o resultado)
   on('classic.PostToolUse', async ($, e, next) => {
     if (fromSub(e)) { if (subAsk) { subAsk = false; await resumeMain($) }; return next(e) }
-    // mantém "Codando/Lendo" visível por pelo menos 1,5s, senão comandos rápidos nunca aparecem
-    const cur = await read($, st)
-    const now = await $.clock.now()
-    const wait = 1500 - (now - cur.since)
-    const since = cur.since
-    if ((cur.mode === 'coding' || cur.mode === 'reading') && wait > 0) {
-      $.clock.after(wait, async () => {
-        const again = await read($, st)
-        if (again.since === since) await setMode($, 'thinking', `resultado de ${e.tool_name}`)
-      })
-    } else {
-      await setMode($, 'thinking', `resultado de ${e.tool_name}`)
-    }
+    await backToThinking($, e.tool_name)
     return next(e)
   })
-  // classic.PostToolUseFailure: ferramenta falhou -> Erro (alguns segundos)
+  // classic.PostToolUseFailure: só entra no histórico; o modo se comporta como no PostToolUse
+  // (o modo 'error' é só para turno que termina com erro)
   on('classic.PostToolUseFailure', async ($, e, next) => {
     const now = await $.clock.now()
     const sub = fromSub(e)
-    await update($, st, (s: St) => ({ ...s, history: log(s, now, `${sub ? '↳ ' : ''}ERRO ${e.tool_name}`) }))
+    await update($, st, (s: St) => ({ ...s, history: log(s, now, `${sub ? '↳ ' : ''}falhou: ${e.tool_name}`) }))
     if (sub) { if (subAsk) { subAsk = false; await resumeMain($) }; await publish($); return next(e) }
-    await setMode($, 'error', `${e.tool_name} falhou`)
+    await backToThinking($, e.tool_name)
     return next(e)
   })
-  // classic.Stop: turno acabou -> Terminou
+  // classic.Stop: turno acabou -> Terminou (e guarda quando, para o "terminou há X")
   on('classic.Stop', async ($, e, next) => {
     if (fromSub(e)) return next(e)
-    await setMode($, 'done', 'turno concluído', { busy: false })
+    const now = await $.clock.now()
+    await setMode($, 'done', 'turno concluído', { busy: false, doneAt: now })
     return next(e)
   })
 
@@ -341,7 +317,8 @@ export const register: Register = on => {
       limits: usage?.rateLimits?.length ? limitsOf(usage) : s.limits,
     }))
     await publish($)
-    if (e.reason === 'error' && !fromSub(e)) await setMode($, 'error', 'turno terminou com erro')
+    // turno principal que acaba com erro: o turno terminou, então não está mais ocupado
+    if (e.reason === 'error' && !fromSub(e)) await setMode($, 'error', 'turno terminou com erro', { busy: false })
     return next(e)
   })
 

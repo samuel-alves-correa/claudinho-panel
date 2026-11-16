@@ -6,7 +6,6 @@ export type St = {
   loud: boolean
   label: string
   since: number
-  frame: number
   sessionStart: number
   turnStart: number
   flashUntil: number
@@ -18,6 +17,8 @@ export type St = {
   usd: number | null
   counts: Record<string, number>
   history: { t: number; text: string }[]
+  /** quando o turno principal terminou (ms epoch); 0 = nada. Zera no próximo prompt */
+  doneAt: number
   /** quando entrou em waiting (ms epoch); 0 fora de waiting */
   waitSince: number
   /** resumo do que esta sendo pedido: ferramenta + alvo curto */

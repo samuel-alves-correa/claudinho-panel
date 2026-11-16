@@ -1,6 +1,6 @@
 {
   "name": "claudinho-panel",
   "version": "0.1.0",
-  "description": "Painel lateral com mascote pixel-art que mostra o estado do agente e o uso da sessão.",
+  "description": "Mascote em pixel art num notch na borda da tela que mostra o estado do agente e o uso da sessão.",
   "types": "./types/index.d.ts"
 }

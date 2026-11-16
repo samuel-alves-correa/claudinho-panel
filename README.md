@@ -15,15 +15,19 @@ claudinho-panel/
 ├─ hooks/
 │  ├─ hooks.json                aponta para o módulo de hooks
 │  ├─ register.tsx              hooks, estado, escrita do JSON, comando /claudinho
+│  ├─ format.ts                 funções puras de texto (alvo da ferramenta, modelo, tradução, cortes)
 │  └─ mascots.ts                paletas dos mascotes (coral, azul, verde)
 ├─ types/index.d.ts             contrato do estado ($.state) do mod
 └─ widget/
    ├─ claudinho-widget.ps1      widget "sempre no topo" (PowerShell + WinForms/GDI+)
    └─ iniciar-widget.cmd        abre o widget sem janela de console
+state/<sessionId>.json          estado de cada sessão (gerado; fora do git)
 ```
 
-Fluxo: **hooks do Claude Code → `register.tsx` atualiza o estado e grava `claudinho-state.json` na pasta do mod → `claudinho-widget.ps1` lê o JSON e anima o mascote e as linhas de uso.**
-O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps ao mudar a altura da faixa) é calculada por tempo dentro do widget.
+Fluxo: **hooks do Claude Code → `register.tsx` atualiza o estado e grava `state/<sessionId>.json` na pasta do mod → `claudinho-widget.ps1` lê a pasta e anima o mascote e as linhas de uso.**
+O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps ao mudar a altura da faixa) é calculada por tempo dentro do widget.
+
+**Várias sessões e sessão encerrada:** cada sessão do Claude Code grava o próprio arquivo e o republica a cada 5 s (o campo `ts` é o heartbeat). O widget considera morta a sessão com `offline: true` (gravado no `session.end`) ou com `ts` há mais de 20 s, e apaga o arquivo depois de 1 h. Entre as vivas, mostra a mais urgente: aguardando em alerta > erro > pensando/codando/lendo > terminou > sua vez > ocioso (empate: `ts` mais recente); as outras aparecem como "+N sessões" no balão do mascote. Sem nenhuma sessão viva, o mascote fica parado de olhos fechados com "Fechado" e o balão diz "Claude Code fechado".
 
 ## Qual hook alimenta qual estado
 
@@ -37,10 +41,11 @@ O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps 
 | `classic.PermissionRequest` | 🟡 **Aguardando você** (em alerta: precisa de permissão) |
 | `classic.Notification` | 🟡 **Aguardando você** (em alerta, exceto `idle_prompt`) |
 | `classic.PostToolUse` | volta a 🧠 Pensando; mantém Codando/Lendo visível por pelo menos 1,5 s |
-| `classic.PostToolUseFailure` | ❌ **Erro** por 4 s |
-| `classic.Stop` | ✅ **Terminou** por 4 s, depois 💬 **Sua vez** (neutro, sem alerta) |
-| `turn.complete` | acumula tokens, lê contexto % e custo |
-| timer de 1 s | 2 min sem atividade viram 😴 **Ocioso**; fim do flash de ✅/❌; relê os limites de uso 1x por minuto |
+| `classic.PostToolUseFailure` | só entra no histórico (`falhou: <ferramenta>`); o estado volta a 🧠 Pensando como no `PostToolUse` |
+| `classic.Stop` | ✅ **Terminou** por 4 s, depois 💬 **Sua vez**; grava `doneAt`, e o widget mantém o anel verde e "terminou há X" até você passar o mouse ou mandar outro prompt |
+| `turn.complete` | acumula tokens, lê contexto % e custo; se o turno acabou com erro, ❌ **Erro** por 4 s e depois 💬 Sua vez |
+| `session.end` | grava `offline: true` no arquivo da sessão |
+| timer de 1 s | 2 min sem atividade viram 😴 **Ocioso**; fim do flash de ✅/❌; relê os limites de uso 1x por minuto; heartbeat a cada 5 s |
 
 ## De onde vem cada dado
 
@@ -48,7 +53,7 @@ O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps 
 |---|---|
 | Tokens (entrada, saída, cache) | `usage` do evento `turn.complete`, somado a cada turno (inclui subagentes). Só aparece depois do 1º turno. |
 | Contexto % e custo US$ | `$.session.usage()`. Se o motor não informar, o widget mostra "sem dados" e **não inventa número**. |
-| Limites de uso (5 h, 7 dias, gasto) | `$.session.usage().rateLimits` vira `limits [{kind, pct, resetsAt}]` (`five_hour`, `seven_day`, `spend_limit`). Sem a leitura, a linha correspondente não aparece. Lidos ao fim de cada turno e 1x por minuto; se o horário de reinício já passou e não veio leitura nova, o widget mostra 0%. |
+| Limites de uso (5 h, 7 dias, gasto) | `$.session.usage().rateLimits` vira `limits [{kind, pct, resetsAt}]` (`five_hour`, `seven_day`, `spend_limit`). Sem a leitura, a linha correspondente não aparece. Lidos ao fim de cada turno e 1x por minuto; se o horário de reinício já passou e não veio leitura nova, o widget mostra "—" (não inventa 0%). |
 | Modelo | `model` (ex.: "Fable 5.2") |
 | Subagentes ativos | `agents [{type, desc, model}]`; a linha "sub" só aparece quando há algum |
 | Duração da sessão e do turno | relógio do mod (`$.clock`) |
@@ -61,9 +66,9 @@ O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps 
    ```
    claude --plugin-dir C:\caminho\para\claudinho-panel
    ```
-2. Nenhum caminho precisa ser ajustado: o mod grava o estado em `<pasta do mod>/claudinho-state.json` (via `$.plugin.root`) e o
-   `widget/iniciar-widget.cmd` passa esse arquivo ao widget (`-StateFile`). Para rodar o widget à mão, o padrão do `.ps1` é o mesmo arquivo.
-   O widget também guarda a posição vertical (`top`) e o modo reduzido (`compact`) em `%USERPROFILE%\.claude\claudinho-widget.json`.
+2. Nenhum caminho precisa ser ajustado: o mod grava o estado em `<pasta do mod>/state/<sessionId>.json` (via `$.plugin.root`) e o
+   `widget/iniciar-widget.cmd` passa essa pasta ao widget (`-StateDir`). Para rodar o widget à mão, o padrão do `.ps1` é a mesma pasta.
+   O widget guarda posição vertical (`top`), modo reduzido (`compact`), balão fixado (`pin`) e redução de movimento (`reduceMotion`) em `%USERPROFILE%\.claude\claudinho-widget.json`, e o próprio PID em `%USERPROFILE%\.claude\claudinho-widget.pid` (é por ele que `/claudinho off` fecha só o widget).
 3. Valide: `claude plugin validate <pasta>` (deve passar sem erros de tipo).
 4. Dentro do Claude Code, rode `/claudinho on`.
 
@@ -81,21 +86,23 @@ O widget só relê o arquivo quando ele muda; toda a animação (30 fps, 60 fps 
 | Item | O que mostra |
 |---|---|
 | Mascote | anel de estado (arco girando em pensando/codando/lendo; âmbar pulsando em aguardando em alerta; verde em terminou; vermelho em erro; cinza nos demais) e o nome curto do estado. Único adereço: o notebook no Codando; o resto o anel já comunica |
-| 5h / 7d | linha com rótulo, % e barra fina dos limites `five_hour` e `seven_day` (barra verde até 65%, âmbar até 85%, vermelha acima; o número só ganha cor acima de 65%); só aparece se houver a leitura |
+| 5h / 7d | linha com rótulo, % e barra fina dos limites `five_hour` e `seven_day` (verde abaixo de 75%, âmbar de 75 a 89%, vermelho a partir de 90%; o mesmo par vale para barra, número e aviso do modo reduzido); só aparece se houver a leitura |
 | ctx | linha do contexto (`ctxPct`), "—" sem dado |
-| sub | linha com o número de subagentes ativos e uma barra em movimento; só aparece quando há algum |
+| sub | linha com o número de subagentes ativos e uma barra em movimento, em rosa (`#f472b6`); só aparece quando há algum |
 
-- **Balão por item:** passe o mouse num item e abre à esquerda um balão preto com seta apontando para ele. Mascote: estado, projeto, o que faz/pede, modelo, sessão/turno e atividade recente. 5h e 7d: janelas de uso com barra e "reinicia em…". ctx: barra, tokens, entrada/saída/custo, cache e ferramentas. sub: descrição e modelo de cada subagente. Ao sair da janela, o balão fecha após ~400 ms; o balão acompanha o conteúdo e nunca sai da tela.
-- **Modo reduzido:** clique no mascote (ou "Expandir / reduzir" no menu) para deixar só a bolinha do mascote, sem o nome do estado e sem as linhas de uso (~110 px de altura). A cor do anel continua dizendo o estado, o balão do mascote ganha o resumo `5h · 7d · ctx · sub`, e um **ponto no anel** avisa quando o maior entre 5 h, 7 dias e contexto chega a 75% (âmbar) ou passa de 85% (vermelho). A escolha fica salva.
-- **Arraste** na vertical (mais de 3 px) para mudar a posição. **Botão direito:** "Expandir / reduzir", "Fixar balão aberto / soltar" e "Fechar".
-- Em **Aguardando você** (alerta) o balão do mascote abre sozinho e fica enquanto durar o alerta; depois fecha em ~10 s sem mouse, a menos que esteja fixado.
-- Sem estado ainda (arquivo ausente), a faixa mostra só o mascote parado e o balão diz "Aguardando o Claude Code…".
+- **Balão por item:** passe o mouse num item (abre após ~180 ms) e aparece à esquerda um balão preto com seta apontando para ele. **Clique num item fixa o balão dele; outro clique solta.** O pino fica salvo; se o item fixado não existir no momento, aparece o balão do mascote. Mascote: estado, projeto, o que faz/pede, modelo, sessão/turno e atividade recente. 5h e 7d: janelas de uso com barra e "reinicia em…". ctx: barra, tokens, entrada/saída/custo, cache e ferramentas. sub: descrição e modelo de cada subagente. Ao sair da janela, o balão fecha após ~400 ms; o balão acompanha o conteúdo e nunca sai da tela.
+- **Modo reduzido:** duplo clique no mascote (ou "Reduzir" / "Expandir" no menu) para deixar só a bolinha do mascote, sem o nome do estado e sem as linhas de uso (~110 px de altura). A cor do anel continua dizendo o estado, o balão do mascote ganha o resumo `5h · 7d · ctx · sub`, e um **selo com "!"** no anel avisa quando o maior entre 5 h, 7 dias e contexto chega a 75% (âmbar) ou a 90% (vermelho). A escolha fica salva.
+- **Arraste** na vertical (mais de 3 px) para mudar a posição. **Botão direito:** "Reduzir" ou "Expandir", "Fixar balão" ou "Soltar balão", "Reduzir movimento" (marcável) e "Fechar".
+- Em **Aguardando você** (alerta) o balão do mascote abre sozinho, com o pedido em até 3 linhas. Um clique no widget dispensa o balão; ele só reabre num alerta novo.
+- Sem estado ainda (pasta vazia), a faixa mostra só o mascote parado e o balão diz "Aguardando o Claude Code…".
+- A janela não rouba o foco do terminal nem aparece no Alt+Tab, e se esconde enquanto houver uma janela em tela cheia no monitor principal. Área de trabalho e DPI são reconsultados a cada 2 s.
+- Durações usam um só formato: "45 s", "12 min", "1 h 05". Custo aparece como "US$ 1,23".
 
 Não há botão X na superfície: para fechar use o menu do botão direito ou `/claudinho off`.
-A redução de movimento segue a configuração de animações do Windows, além de `CW_REDUCE_MOTION=1` (sem pulso, giros e pulos; a altura da faixa muda direto).
+A redução de movimento segue a configuração de animações do Windows, o item "Reduzir movimento" do menu e `CW_REDUCE_MOTION=1` (sem pulso, giros e pulos; a altura da faixa muda direto).
 Para abrir com o Windows, coloque um atalho de `widget/iniciar-widget.cmd` em `shell:startup`.
-Para rodar sem o Claude: `powershell -STA -File widget\claudinho-widget.ps1 -StateFile <json>`.
-Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fixado (útil para capturas de tela); `CW_TOP=<px>` força a posição vertical; `CW_COMPACT=0|1` força expandido/reduzido.
+Para rodar sem o Claude: `powershell -STA -File widget\claudinho-widget.ps1 -StateDir <pasta>`.
+Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fixado (útil para capturas de tela); `CW_TOP=<px>` força a posição vertical; `CW_COMPACT=0|1` força expandido/reduzido; `CW_NO_PID=1` não grava nem apaga o `.pid` e `CW_CFG=<arquivo>` usa outra config (para testar com outro widget aberto).
 
 **Criar outro mascote:** em `hooks/mascots.ts` copie uma entrada de `MASCOTS` e mude a paleta. Para mudar o desenho, edite `Draw-Mascot` em `widget/claudinho-widget.ps1` (o corpo é montado com retângulos em "unidades de pixel", função `U`).
 
@@ -109,8 +116,9 @@ Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fix
 | 🔍 Lendo | passeia devagar, arco girando no anel |
 | 💬 Sua vez | acena por ~3 s e fica parado, sem alerta (cor neutra); o widget passa a redesenhar ~4x/s |
 | 🟡 Aguardando você | pula com os braços para cima e o anel âmbar pulsa (~3 ciclos, depois fixo) |
-| ✅ Terminou | pulinho, anel verde |
-| ❌ Erro | treme com olhos em X, anel vermelho |
+| ✅ Terminou | pulinho, anel verde (o verde fica até você passar o mouse) |
+| ❌ Erro | treme com olhos em X, anel vermelho (só quando o turno termina com erro) |
+| Fechado | parado, olhos fechados, sem animação (nenhuma sessão viva) |
 
 Campos do JSON por estado: `name` (nome completo, título do balão), `short` (nome curto sob o mascote, cabe em ~64 px) e `labelShort` (label curto: alvo da ferramenta, como `claudinho-state.json`, ou o próprio label).
 
@@ -130,16 +138,20 @@ Campos do JSON por estado: `name` (nome completo, título do balão), `short` (n
 - Depois de você aprovar uma permissão, o estado 🟡 só muda no próximo hook (`PostToolUse`); não há evento "permissão concedida". Em um comando longo pode demorar.
 - O widget é só para **Windows** (PowerShell 5.1 + WinForms) e só no monitor principal.
 - Um mod não consegue desenhar fora do Claude Code; por isso o widget é um processo separado que lê o JSON.
+- Sem acesso por teclado nem leitor de tela: tudo depende do mouse. DPI é o do sistema, não por monitor.
+- Depois de um `/clear` o mod marca o id antigo como offline e segue publicando sob o novo id; isso ainda não foi exercitado em uso real.
 - O painel lateral do terminal (`$.ui.open`) foi **removido de propósito**: ocupava espaço e fazia o chat piscar. O mod não registra mais hook `ui.render`.
 
 ## Armadilhas que já encontramos (para quem for mexer)
 
 - **Variável `h` no JSX**: o JSX do mod usa `h` como fábrica. Nunca nomeie um parâmetro `h` (ex.: `.map(h => ...)`), senão dá `h is not a function`.
+- **Mudou o `St`?** Troque a tag `shape` do atom em `register.tsx` (hoje `st-7`), senão o estado guardado pela versão antiga volta.
+- **Sem API para apagar arquivo no mod**: sessão encerrada vira `offline: true` e quem apaga o arquivo é o widget.
+- **Janela que nunca fica ativa** (`Cw.NForm`, `WS_EX_NOACTIVATE`): o menu de contexto não fecha sozinho ao clicar fora, então há um fechamento manual por clique fora do widget.
 - **Validador estático**: `$` só pode ser passado para funções declaradas no topo do arquivo (`function f($, ...)`), não para closures dentro de `register`.
 - **PowerShell 5.1 lê `.ps1` sem BOM como ANSI**: salve `claudinho-widget.ps1` em UTF-8 **com BOM**, senão os acentos quebram.
 - **Fontes em pixels**: o widget é DPI-aware e usa `ScaleTransform`; as fontes são criadas em `GraphicsUnit.Pixel` (função `F`), senão o texto sai 2,25× maior.
 - **Argumentos negativos** em chamadas estilo comando do PowerShell precisam de parênteses: `U $B 0 (-31) 35 23`.
-- **Brush com alpha**: `Br` multiplica o alpha pela variável global `$script:A` (fade); mantenha a conta `alpha * A / 255`.
 - Para tirar prints do widget via PowerShell, chame `SetProcessDPIAware()` antes, senão a captura vem cortada na escala errada.
 - **Region**: a janela é só a faixa quando o balão está fechado; com o balão aberto cresce para a esquerda e a `Region` é a união das duas formas (o vão da seta fica de fora). Ela só é recriada quando a geometria muda; a antiga é descartada.
 - **Variáveis do PowerShell não diferenciam maiúsculas**: `$trk` e `$TRK` são a mesma. Dentro do `Paint` não reuse nomes de variáveis da paleta global.
@@ -147,5 +159,6 @@ Campos do JSON por estado: `name` (nome completo, título do balão), `short` (n
 ## Ideias para continuar
 
 - Detectar "permissão concedida" para sair do 🟡 na hora.
+- Atalho global de teclado para abrir o balão; DPI por monitor; escolher monitor e borda.
 - Iniciar o widget automaticamente no `session.start` (hoje é manual, via `/claudinho on`).
 - Notificação sonora (`$.audio.play`) quando entrar em 🟡 em alerta.
