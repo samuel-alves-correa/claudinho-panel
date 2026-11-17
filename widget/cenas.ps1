@@ -14,6 +14,7 @@
 # O corpo de frente ocupa x -8..8 e y -16..0; o anel tem raio ~17 nessas unidades, com o centro em y = -8.
 #
 # Depuracao: CW_CENAS=0 desliga todas as cenas; CW_CENA=inseto|quadro|plugue|aguardando|chefe|pescaria|cochilo repete essa cena em laco (bom para gravar GIF).
+#   Tambem: terminal|costura|lampada|lupa|fumaca|placa (cenas do estado: entra, 3 lacos e sai) e bandeira|borboleta.
 
 # ---------- configuracao ----------
 $script:CN_ON = ($env:CW_CENAS -ne '0')
@@ -21,7 +22,7 @@ $script:CN_DEBUG = [string]$env:CW_CENA
 $CN_OCIOSO_MIN = 40.0      # s parado ate a 1a cena do rodizio (e intervalo minimo entre cenas)
 $CN_OCIOSO_VAR = 40.0      # + ate isso de sorteio
 $CN_FALHA_JANELA = 8000.0  # ms: falha de ferramenta mais velha que isso nao vira inseto (evita tocar ao abrir o widget)
-$CN_RODIZIO = @('plugue', 'inseto', 'quadro')
+$CN_RODIZIO = @('plugue', 'inseto', 'quadro', 'borboleta')
 
 # cores dos adereços (contraste >= 3:1 sobre o preto do notch)
 $CN_BUG = '#e5484d'; $CN_BUGD = '#7a1f22'; $CN_PATA = '#8a8a8a'
@@ -40,6 +41,7 @@ $CN_AG_SONO = 25.0
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
 $CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6; fumaca = 0.9; placa = 0.3 }
 $CN_OKD = '#3a9a63'     # verde escuro (bandeira)
+$CN_ASA = '#8ec5ff'; $CN_ASAD = '#5a9bd8'   # asas da borboleta (corpo $CN_VARA)
 $CN_LENTE = '#9fd0f5'   # vidro da lupa (aro $CN_AGULHA, cabo $CN_VARA, pegadas $CN_PATA)
 $CN_LAMPF = '#8a7a3a'; $CN_LAMPM = '#c9ad4a'; $CN_LAMPA = '#ffe066'   # lampada fraca, piscando e acesa
 $CN_AGULHA = '#c8c6bf'   # agulha da costura (a linha usa $CN_PINCEL)
@@ -183,6 +185,16 @@ $script:CENAS = @{
       @{ ate = 0.55; ox = -3.0; pose = 'squash'; lift = -1.5; eyX = 1.0; eyY = -13.0 }
       @{ ate = 1.8; ox = -3.0; eyes = 'happy'; armL = -2.0 }
       @{ ate = 2.2; ox = -3.0; eyes = 'happy' }
+    )) }
+  # Ocioso (rodizio): uma borboleta entra pela direita, pousa na cabeca dele (ele fica vesgo olhando para ela) e vai embora
+  # pela esquerda; ele acompanha e sorri (posicao da borboleta em CN-Borboleta)
+  'borboleta' = @{ prio = 1; entra = (CN-Seq @(
+      @{ ate = 0.5; eyX = 1.0; eyY = -14.5 }
+      @{ ate = 1.1; eyX = 0.5; eyY = -15.5 }
+      @{ ate = 1.6; eyY = -15.5 }
+      @{ ate = 3.8; eyes = 'vesgo' }
+      @{ ate = 4.4; eyX = -1.0; eyY = -15.0 }
+      @{ ate = 5.0; eyes = 'happy' }
     )) }
   # ---- cenas do estado (estado = $true): prio 0.5, qualquer outra cena passa por cima; semRm = nao toca com reducao de movimento
   # Codando com Bash: terminal a esquerda, ele digita e le as linhas verdes que sobem; na saida aparece um "$" novo
@@ -521,6 +533,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'fumaca' { CN-Fumaca $cq $camada }
     'bandeira' { if ($camada -eq 'frente') { CN-Bandeira $cq $t } }
     'placa' { if ($camada -eq 'frente') { CN-Placa $cq $t } }
+    'borboleta' { if ($camada -eq 'frente') { CN-Borboleta $cq $t } }
   }
 }
 
@@ -1068,4 +1081,25 @@ function CN-Placa($cq, [double]$t) {
   $qx = $bx + 4.8
   U $CN_TINTA $qx $by 1.9 0.7; U $CN_TINTA ($qx + 1.2) ($by + 0.5) 0.7 0.9
   U $CN_TINTA ($qx + 0.6) ($by + 1.3) 0.7 0.6; U $CN_TINTA ($qx + 0.6) ($by + 2.3) 0.7 0.7
+}
+
+# ---------- borboleta (Ocioso) ----------
+# Asas azuis de 1,4 x 1,2 (+ 1 x 0,7 embaixo) e corpo marrom. Caminho: entra em (12, -13), passa por cima da cabeca e pousa nela
+# em (0,5, -17,4) aos 1,6 s, fica ate 3,8 s batendo as asas devagar e sai por (-4, -20,5) ate (-11, -14).
+# Cantos a <= 15 do centro em todo o caminho.
+function CN-Borboleta($cq, [double]$t) {
+  $A = $cq.tc
+  if ($A -gt 4.9) { return }
+  $ts = @(0.0, 0.5, 1.0, 1.6, 3.8, 4.3, 4.9)
+  $bx = CN-Lerp $ts @(12.0, 8.0, 4.0, 0.5, 0.5, -4.0, -11.0) $A
+  $by = CN-Lerp $ts @(-13.0, -18.0, -19.8, -17.4, -17.4, -20.5, -14.0) $A
+  $pousada = ($A -ge 1.6 -and $A -lt 3.8)
+  $aberta = $(if ($pousada) { (($A % 0.8) -lt 0.6) } else { (([int][math]::Floor($t * 10)) % 2 -eq 0) })
+  if ($aberta) {
+    U $CN_ASA ($bx - 1.7) ($by - 1.0) 1.4 1.2; U $CN_ASA ($bx + 0.3) ($by - 1.0) 1.4 1.2
+    U $CN_ASAD ($bx - 1.3) ($by + 0.2) 1.0 0.7; U $CN_ASAD ($bx + 0.3) ($by + 0.2) 1.0 0.7
+  } else {
+    U $CN_ASA ($bx - 0.9) ($by - 1.4) 0.6 1.4; U $CN_ASA ($bx + 0.3) ($by - 1.4) 0.6 1.4
+  }
+  U $CN_VARA ($bx - 0.3) ($by - 0.8) 0.6 1.6
 }

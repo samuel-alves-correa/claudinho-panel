@@ -445,6 +445,7 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
     $ex = $e2[0]; $ey = $e2[1]; $ew = $e2[2]; $eh = $e2[3]
     $ec = $eyes
     if ($eyes -eq 'vigia') { $ec = $(if ($ei -eq 0) { 'closed' } else { 'open' }) }   # um fechado, um aberto (cena cochilo)
+    if ($eyes -eq 'vesgo') { $ec = 'open'; $ex += $(if ($ei -eq 0) { 1.8 } else { -1.8 }); $ey -= 1.0 }   # para o meio e para cima (cena borboleta)
     $ei++
     if ($eh -lt 1) { $ec = 'dash' }
     switch ($ec) {
