@@ -114,7 +114,9 @@ $gs0 = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $script:S = $gs0.Dpi
 $script:wa = [Cw.W]::WorkArea()
 
 # ---------- paleta (contraste >= 3:1 sobre preto nos elementos graficos) ----------
-$BLACK = '#000000'; $TEXT = '#faf9f5'; $DIM = '#a09d96'; $LINE = '#262626'
+# fundo grafite quente (paleta do Claude) em vez de preto puro; $BLACK manteve o nome por ser usado em recortes
+$BLACK = '#1f1e1d'; $TEXT = '#faf9f5'; $DIM = '#a09d96'; $LINE = '#3a3935'
+$CLAY = '#d97757'; $FAINT = '#77746b'; $RTRK = '#45433e'   # destaque argila; texto terciario; trilho dos aneis de uso
 $TRK = '#5e5e5e'; $TRKO = '#8a8a8a'          # trilho das barras; trilho do item com balao aberto
 $QUIET = '#6b6b66'; $QUIETO = '#9a9a94'      # anel neutro; anel neutro com balao aberto
 $GRN = '#5fd38d'; $AMB = '#f5c542'; $RED = '#ff5f56'; $SUBC = '#f472b6'
@@ -241,9 +243,13 @@ $fSmall = (F 'Segoe UI' 9)
 $fRing = (F 'Segoe UI' 9 'Bold')
 $fMono = (F 'Consolas' 9)
 $fMonoB = (F 'Consolas' 11 'Bold')
+$fState = (F 'Georgia' 10.5)           # nome do estado com serifa (como a "voz" do Claude)
+$fTiny = (F 'Segoe UI' 7.5)            # linha de contexto, detalhe dos aneis e rodape
+$fRingLab = (F 'Segoe UI' 6.5 'Bold')  # rotulo dentro do anel de uso
 $center = New-Object System.Drawing.StringFormat; $center.Alignment = 'Center'; $center.FormatFlags = 'NoWrap'
 $left = New-Object System.Drawing.StringFormat; $left.FormatFlags = 'NoWrap'
 $right = New-Object System.Drawing.StringFormat; $right.Alignment = 'Far'; $right.FormatFlags = 'NoWrap'
+$mid = New-Object System.Drawing.StringFormat; $mid.Alignment = 'Center'; $mid.LineAlignment = 'Center'; $mid.FormatFlags = 'NoWrap'
 # superficie so para medir texto fora do Paint (mesma escala do Paint, para medir igual)
 $script:mg = [System.Drawing.Graphics]::FromImage((New-Object System.Drawing.Bitmap 1, 1))
 $script:mg.TextRenderingHint = 'ClearTypeGridFit'
@@ -277,6 +283,43 @@ function ResetTxt([double]$ms, [double]$nowMs) {
 }
 # um so par de limiares (barras, numero e aviso do modo reduzido): verde < 75, ambar 75-89, vermelho >= 90
 function Band([double]$p) { if ($p -ge 90) { $RED } elseif ($p -ge 75) { $AMB } else { $GRN } }
+# aneis de uso da faixa: argila ate 75, depois os mesmos ambar/vermelho
+function RingBand([double]$p) { if ($p -ge 75) { Band $p } else { $CLAY } }
+# horarios curtos (hora local): "15:40", "seg 09h", e "qui" / "15:40" para o fim projetado
+$script:dias = 'dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'
+function HM([double]$ms) { '{0:HH:mm}' -f [DateTimeOffset]::FromUnixTimeMilliseconds([long]$ms).LocalDateTime }
+function DayH([double]$ms) { $dt = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$ms).LocalDateTime; '{0} {1:HH}h' -f $script:dias[[int]$dt.DayOfWeek], $dt }
+function WhenShort([double]$ms, [double]$nowMs) {
+  $a = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$ms).LocalDateTime; $b = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$nowMs).LocalDateTime
+  if ($a.Date -eq $b.Date) { HM $ms } else { $script:dias[[int]$a.DayOfWeek] }
+}
+# relogio do turno: "0:42", "12:05", "1:02:10"
+function Clk([double]$ms) {
+  $t = [long][math]::Floor([math]::Max(0, $ms) / 1000)
+  if ($t -ge 3600) { return ('{0}:{1:00}:{2:00}' -f [long][math]::Floor($t / 3600), [long][math]::Floor(($t % 3600) / 60), ($t % 60)) }
+  '{0}:{1:00}' -f [long][math]::Floor($t / 60), ($t % 60)
+}
+# projecao pelo ritmo medio da janela: onde o uso chega no reset e quando acabaria (so com >= 10% da janela decorrida)
+function Proj($l, [double]$len, [double]$nowMs) {
+  if (-not $l -or $null -eq $l.pct -or $l.stale -or $l.reset -le 0 -or $l.pct -le 0) { return $null }
+  $start = $l.reset - $len; $el = $nowMs - $start
+  if ($el -lt 0.1 * $len -or $el -gt $len) { return $null }
+  @{ pct = $l.pct * $len / $el; end = $start + 100.0 * $el / $l.pct }
+}
+# linha de contexto sob o nome do estado (expandido): o que esta acontecendo agora, em poucas palavras
+function CtxLine($v, [double]$nowMs) {
+  if ($v.off) { return @('', $DIM) }
+  $m = $v.mode
+  if ($m -eq 'waiting' -and $v.loud) { return @(('há ' + (Dur ($nowMs - $v.waitSince))), $AMB) }
+  if (($m -eq 'coding' -or $m -eq 'reading') -and $v.turnStart -gt 0) {
+    $tl = $(if ($v.tool) { $v.tool + '  ' } else { '' })
+    return @(($tl + (Clk ($nowMs - $v.turnStart))), $DIM)
+  }
+  if (($m -eq 'thinking' -or $m -eq 'error') -and $v.turnStart -gt 0) { return @((Clk ($nowMs - $v.turnStart)), $DIM) }
+  if ($m -eq 'agents') { return @($(if ($v.agentsN -eq 1) { '1 subagente' } else { '{0} subagentes' -f $v.agentsN }), $SUBC) }
+  if ($v.doneAt -gt 0) { return @(('há ' + (Dur ($nowMs - $v.doneAt))), $DIM) }   # desde que o turno terminou
+  @('', $DIM)
+}
 
 # largura medida (com cache)
 function MW($g, [string]$s, $font) {
@@ -607,7 +650,7 @@ function Update-View([double]$nowMs) {
     $v.name = $nm
     $v.ncol = $(if ($mode -eq 'idle') { $TEXT } else { $col })
     $sh = [string]$cur.short; if (-not $sh) { $sh = ($nm -split '/')[0] }
-    $v.shortTxt = ClipW $script:mg $sh $fName ($NW - 4)
+    $v.shortTxt = ClipW $script:mg $sh $fState ($NW - 4)
     $v.scol = $(if ($mode -eq 'idle') { $DIM } else { $col })
     $v.project = [string]$cur.project
     $v.label = [string]$cur.label
@@ -660,14 +703,23 @@ function Update-View([double]$nowMs) {
     elseif ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'agents') { $v.ring = 'spin' }
     # linhas de uso (expandido) e resumo para o balao do mascote (reduzido)
     $parts = New-Object System.Collections.ArrayList
-    foreach ($spec in @(@('five_hour', '5h'), @('seven_day', '7d'))) {
+    # cada linha: anel (rw.pv), valor, detalhe curto (sub/scol) e marca da projecao (mark 0..1, so quando nao estoura)
+    foreach ($spec in @(@('five_hour', '5h', 18000000.0), @('seven_day', '7d', 604800000.0))) {
       $l = $v.lim[$spec[0]]
       if (-not $l) { continue }
-      $rw = @{ k = $spec[0]; bal = 'limits'; lab = $spec[1]; val = '—'; vcol = $TEXT; pv = $null; fill = $GRN }
+      $rw = @{ k = $spec[0]; bal = 'limits'; lab = $spec[1]; val = '—'; vcol = $TEXT; pv = $null; fill = $GRN; sub = ''; scol = $FAINT; mark = $null }
       if ($null -ne $l.pct) { $rw.pv = $l.pct; $rw.val = '{0}%' -f [math]::Round($l.pct); $rw.fill = Band $l.pct; if ($l.pct -ge 75) { $rw.vcol = $rw.fill } }
+      if ($l.stale) { $rw.sub = 'reiniciou' }
+      elseif ($l.reset -gt 0) { $rw.sub = $(if ($spec[0] -eq 'five_hour') { HM $l.reset } else { DayH $l.reset }) }
+      $pj = Proj $l $spec[2] $nowMs
+      if ($pj) {
+        if ($pj.pct -ge 100 -and $pj.end -lt $l.reset) { $rw.sub = [string][char]0x2192 + ' ' + (WhenShort $pj.end $nowMs); $rw.scol = $AMB; $rw.vcol = $AMB }
+        else { $rw.mark = [math]::Min(0.995, $pj.pct / 100) }
+      }
       [void]$v.rows.Add($rw); [void]$parts.Add(('{0} {1}' -f $spec[1], $rw.val))
     }
-    $rw = @{ k = 'ctx'; bal = 'ctx'; lab = 'ctx'; val = '—'; vcol = $TEXT; pv = $null; fill = $GRN }
+    $rw = @{ k = 'ctx'; bal = 'ctx'; lab = 'ctx'; val = '—'; vcol = $TEXT; pv = $null; fill = $GRN; sub = ''; scol = $FAINT; mark = $null }
+    if ($null -ne $cur.ctxTok) { $rw.sub = KS $cur.ctxTok }
     if ($null -ne $v.ctx) { $rw.pv = $v.ctx; $rw.val = '{0}%' -f [math]::Round($v.ctx); $rw.fill = Band $v.ctx; if ($v.ctx -ge 75) { $rw.vcol = $rw.fill }; [void]$parts.Add(('ctx {0}' -f $rw.val)) }
     [void]$v.rows.Add($rw)
     if ($v.agentsN -gt 0) {
@@ -708,17 +760,21 @@ function Rebuild-Items {
   # reduzido: so a bolinha do mascote, sem o nome do estado (a cor do anel ja diz), com menos folga e alargamento menor
   $script:flare = $(if ($script:compact) { $FLC } else { $FL })
   $padV = $(if ($script:compact) { 7.0 } else { 14.0 })
-  $mh = $(if ($script:compact) { 2 * $MR + 4 } else { 2 * $MR + 24 })
+  $mh = $(if ($script:compact) { 2 * $MR + 4 } else { 2 * $MR + 38 })   # expandido: nome + linha de contexto
   $y = $script:flare + $padV
   $lastGap = 12.0
   [void]$script:items.Add(@{ k = 'mascot'; bal = 'mascot'; y = $y; h = $mh; cy = ($y + $MR + 2); pad = 6.0 }); $y += $mh + $lastGap
-  # expandido: bloco de uso em linhas (rotulo, valor e barra fina); o detalhe fica no balao
+  # expandido: uso em linhas (anel com rotulo, valor e detalhe; subagentes com barra) e rodape da sessao
   if (-not $script:compact -and $v -and -not $v.off -and $v.rows.Count -gt 0) {
     $y += 4   # folga da linha separadora
     foreach ($rw in $v.rows) {
-      [void]$script:items.Add(@{ k = $rw.k; bal = $rw.bal; y = $y; h = 22.0; cy = ($y + 11.0); pad = 4.0; row = $rw })
-      $lastGap = 8.0; $y += 22 + $lastGap
+      $rh = $(if ($rw.k -eq 'sub') { 22.0 } else { 26.0 })
+      [void]$script:items.Add(@{ k = $rw.k; bal = $rw.bal; y = $y; h = $rh; cy = ($y + $rh / 2); pad = 3.0; row = $rw })
+      $lastGap = 6.0; $y += $rh + $lastGap
     }
+    $y += 8   # linha separadora do rodape
+    [void]$script:items.Add(@{ k = 'foot'; bal = 'mascot'; y = $y; h = 40.0; cy = ($y + 20); pad = 3.0 })
+    $lastGap = 6.0; $y += 40 + $lastGap
   }
   $script:tgtH = $y - $lastGap + $padV + $script:flare
   if ($script:curH -le 0) { $script:curH = $script:tgtH }
@@ -1109,19 +1165,46 @@ function Draw-Static($g, $geo, $v, [string]$openK, [double]$nowMs) {
   foreach ($it in $script:items) {
     $iy = $geo.sy + $it.y
     if ($it.k -eq 'mascot') {
-      if (-not $script:compact) { $g.DrawString($v.shortTxt, $fName, (Br $v.scol), [System.Drawing.RectangleF]::new([single]$geo.sx, [single]($iy + 2 * $MR + 8), [single]$NW, 16), $center) }
+      if (-not $script:compact) {
+        $g.DrawString($v.shortTxt, $fState, (Br $(if ($v.mode -eq 'idle') { $TEXT } else { $v.scol })), [System.Drawing.RectangleF]::new([single]$geo.sx, [single]($iy + 2 * $MR + 7), [single]$NW, 18), $center)
+        $cl = CtxLine $v $nowMs
+        if ($cl[0]) { $g.DrawString((ClipW $g $cl[0] $fTiny ($NW - 6)), $fTiny, (Br $cl[1]), [System.Drawing.RectangleF]::new([single]$geo.sx, [single]($iy + 2 * $MR + 25), [single]$NW, 14), $center) }
+      }
       continue
     }
-    # linhas de uso: rotulo a esquerda, valor a direita, barra fina embaixo (a barra de subagentes anima no Paint)
-    $rw = $it.row
     $x0 = $geo.sx + 10; $w0 = $NW - 20
-    if (-not $sepDone) { $sepDone = $true; Rect $g $LINE $x0 ($iy - 9) $w0 1 }
-    $g.FillPath((Br $(if ($openK -eq $it.k) { $TRKO } else { $TRK })), (RoundPath $x0 ($iy + 18) $w0 4 2))
-    if ($it.k -ne 'sub' -and $null -ne $rw.pv -and $rw.pv -gt 0) {
-      $g.FillPath((Br $rw.fill), (RoundPath $x0 ($iy + 18) ([math]::Max(4, $w0 * $rw.pv / 100)) 4 2))
+    if ($it.k -eq 'foot') {
+      # rodape: projeto, modelo e custo da sessao, centralizados e discretos
+      Rect $g $LINE $x0 ($iy - 7) $w0 1
+      $fl = @(@($v.project, $DIM), @($v.model, $FAINT), @($v.usdT, $FAINT))
+      $fy = $iy
+      foreach ($ln in $fl) {
+        if ($ln[0] -and $ln[0] -ne '—') { $g.DrawString((ClipW $g ([string]$ln[0]) $fTiny ($NW - 8)), $fTiny, (Br $ln[1]), [System.Drawing.RectangleF]::new([single]$geo.sx, [single]$fy, [single]$NW, 14), $center) }
+        $fy += 13
+      }
+      continue
     }
-    $g.DrawString($rw.lab, $fSmall, (Br $DIM), [single]($x0 - 3), [single]($iy - 1))
-    $g.DrawString($rw.val, $fRing, (Br $rw.vcol), [System.Drawing.RectangleF]::new([single]$x0, [single]($iy - 1), [single]($w0 + 3), 16), $right)
+    $rw = $it.row
+    if (-not $sepDone) { $sepDone = $true; Rect $g $LINE $x0 ($iy - 7) $w0 1 }
+    if ($it.k -eq 'sub') {
+      # subagentes: rotulo e numero, barra fina embaixo (a parte rosa anima no Paint)
+      $g.FillPath((Br $(if ($openK -eq $it.k) { $TRKO } else { $TRK })), (RoundPath $x0 ($iy + 16) $w0 4 2))
+      $g.DrawString($rw.lab, $fTiny, (Br $DIM), [single]($x0 - 2), [single]($iy - 1))
+      $g.DrawString($rw.val, $fRing, (Br $rw.vcol), [System.Drawing.RectangleF]::new([single]$x0, [single]($iy - 2), [single]($w0 + 3), 16), $right)
+      continue
+    }
+    # uso: anel que enche no sentido horario com o rotulo dentro; a direita o valor e o detalhe (reset, fim projetado, tokens)
+    $rcx = $geo.sx + 19; $rcy = $iy + 13; $rr = 10.0
+    Ring $g $rcx $rcy $rr 2.6 $(if ($openK -eq $it.k) { $TRK } else { $RTRK })
+    if ($null -ne $rw.pv -and $rw.pv -gt 0) { Arc $g $rcx $rcy $rr 2.6 (RingBand $rw.pv) -90 ([math]::Max(4.0, 360.0 * $rw.pv / 100)) }
+    if ($null -ne $rw.mark) {
+      $ma = (-90 + 360 * $rw.mark) * [math]::PI / 180
+      $g.DrawLine((Pn $DIM 1.4), [single]($rcx + ($rr - 3.5) * [math]::Cos($ma)), [single]($rcy + ($rr - 3.5) * [math]::Sin($ma)), [single]($rcx + ($rr + 3) * [math]::Cos($ma)), [single]($rcy + ($rr + 3) * [math]::Sin($ma)))
+    }
+    $g.DrawString($rw.lab, $fRingLab, (Br $DIM), [System.Drawing.RectangleF]::new([single]($rcx - $rr), [single]($rcy - $rr), [single](2 * $rr), [single](2 * $rr)), $mid)
+    $tx0 = $geo.sx + 33
+    $g.DrawString($rw.val, $fRing, (Br $rw.vcol), [single]($tx0 - 2), [single]($iy))
+    if ($rw.sub) { $g.DrawString((ClipW $g ([string]$rw.sub) $fTiny ($NW - 35)), $fTiny, (Br $rw.scol), [single]($tx0 - 1), [single]($iy + 14)) }
   }
   if ($geo.open) {
     $stg = $g.Save()
@@ -1139,7 +1222,7 @@ $form.Add_Paint({ try {
   $nowMs = NowMs
   $openK = $(if ($geo.open) { [string]$geo.item.k } else { '' })
   # o fundo preto ja e a faixa e o balao (a Region recorta a forma); so os baloes com tempos ("ha 5 s", "reinicia em") mudam sozinhos
-  $tb = ''; if ($geo.open -and -not $v.off -and ($geo.item.bal -eq 'mascot' -or $geo.item.bal -eq 'limits')) { $tb = [math]::Floor($nowMs / 1000) }
+  $tb = ''; if (-not $v.off -and (-not $script:compact -or ($geo.open -and ($geo.item.bal -eq 'mascot' -or $geo.item.bal -eq 'limits')))) { $tb = [math]::Floor($nowMs / 1000) }   # relogios da faixa e do balao
   $cs = $form.ClientSize
   $lk = '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $script:shapeKey, $cs.Width, $cs.Height, $script:viewVer, $script:compact, $openK, $tb
   if ($lk -ne $script:layKey -or -not $script:lay) {
@@ -1201,7 +1284,7 @@ $form.Add_Paint({ try {
     if ($it.k -eq 'sub') {
       $x0 = $geo.sx + 10; $w0 = $NW - 20
       $sx0 = $(if ($script:rm) { 0.0 } else { ($w0 - 18) * (0.5 + 0.5 * [math]::Sin($t * 3)) })
-      $g.FillPath((Br $SUBC), (RoundPath ($x0 + $sx0) ($iy + 18) $(if ($script:rm) { $w0 } else { 18 }) 4 2))
+      $g.FillPath((Br $SUBC), (RoundPath ($x0 + $sx0) ($iy + 16) $(if ($script:rm) { $w0 } else { 18 }) 4 2))
     }
   }
 } catch { Log ("PAINT: " + $_.Exception.Message + " @ " + $_.InvocationInfo.ScriptLineNumber) } finally { foreach ($p2 in $script:pp) { $p2.Dispose() }; $script:pp.Clear() } })
