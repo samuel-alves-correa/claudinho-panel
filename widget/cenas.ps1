@@ -38,7 +38,7 @@ $CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
 # cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
-$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6 }
+$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6; fumaca = 0.9 }
 $CN_LENTE = '#9fd0f5'   # vidro da lupa (aro $CN_AGULHA, cabo $CN_VARA, pegadas $CN_PATA)
 $CN_LAMPF = '#8a7a3a'; $CN_LAMPM = '#c9ad4a'; $CN_LAMPA = '#ffe066'   # lampada fraca, piscando e acesa
 $CN_AGULHA = '#c8c6bf'   # agulha da costura (a linha usa $CN_PINCEL)
@@ -223,6 +223,21 @@ $script:CENAS = @{
     ))
     laco = (CN-Seq @( @{ ate = 6.0; wf = 6.0; eyY = -12.5 } ))
     sai = (CN-Seq @( @{ ate = 0.4; wf = 6.0 } )) }
+  # Erro: o notebook no chao solta fumaca escura; ele abana com a mao esquerda, descansa olhando e abana de novo
+  'fumaca' = @{ prio = 0.5; estado = $true; semRm = $true
+    entra = (CN-Seq @(
+      @{ ate = 0.2; ox = 3.0; eyes = 'x' }
+      @{ ate = 0.5; ox = 3.0; oy = -1.5; eyes = 'x'; armL = -2.0; armR = -2.0 }
+    ))
+    laco = (CN-Seq @(
+      @{ ate = 0.15; ox = 3.0; eyes = 'x'; eyX = -1.0; armL = -3.0 }
+      @{ ate = 0.3; ox = 3.0; eyes = 'x'; eyX = -1.0 }
+      @{ ate = 0.45; ox = 3.0; eyes = 'x'; eyX = -1.0; armL = -3.0 }
+      @{ ate = 0.6; ox = 3.0; eyes = 'x'; eyX = -1.0 }
+      @{ ate = 0.75; ox = 3.0; eyes = 'x'; eyX = -1.0; armL = -3.0 }
+      @{ ate = 0.9; ox = 3.0; eyes = 'x'; eyX = -1.0 }
+      @{ ate = 3.0; ox = 3.0; eyes = 'x'; eyX = -1.0; eyY = -13.0; tilt = $true }
+    )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -241,6 +256,7 @@ function CN-EhEst([string]$id) { $d = $script:CENAS[$id]; [bool]($d -and $d.esta
 function CN-Estado($v, [string]$mode, [string]$fam) {
   $tool = [string]$v.tool
   if ($mode -eq 'thinking') { return 'lampada' }
+  if ($mode -eq 'error') { return 'fumaca' }
   if ($mode -eq 'reading' -and ($tool -eq 'Read' -or $tool -eq 'Glob' -or $tool -eq 'LS')) { return 'lupa' }
   if ($mode -eq 'coding' -and $tool -eq 'Bash') { return 'terminal' }
   if ($mode -eq 'coding' -and ($tool -eq 'Edit' -or $tool -eq 'MultiEdit' -or $tool -eq 'NotebookEdit')) { return 'costura' }
@@ -473,6 +489,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'costura' { if ($camada -eq 'frente') { CN-Costura $cq } }
     'lampada' { if ($camada -eq 'frente') { CN-Lampada $cq $t } }
     'lupa' { CN-Lupa $cq $camada }
+    'fumaca' { CN-Fumaca $cq $camada }
   }
 }
 
@@ -951,4 +968,26 @@ function CN-Lupa($cq, [string]$camada) {
     $x0 = [math]::Max($px, $xl - 1.1); $x1 = [math]::Min($px + 1.4, $xl + 1.1)
     if ($x1 - $x0 -ge 0.6) { U $CN_AGUAD $x0 (-1.6 + 0.6 * ($i % 2)) ($x1 - $x0) 1.0 }
   }
+}
+
+# ---------- fumaca (Erro) ----------
+# Notebook de frente no chao, a esquerda (x -12,5..-5, y -6..0; cantos a <= 14,8 do centro), tela vermelha escura
+# (pisca vermelha na entrada). 4 nuvens sobem da tampa, crescem, clareiam e vao para a esquerda (abanadas): ate (-12,9, -14,8).
+# O notebook vai atras do corpo; a fumaca na frente (passa pela mao que abana).
+function CN-Fumaca($cq, [string]$camada) {
+  if ($camada -eq 'frente') {
+    for ($i = 0; $i -lt 4; $i++) {
+      $f = (($cq.tc + $i * 0.375) % 1.5) / 1.5
+      if ($cq.tc + $i * 0.375 -lt 1.5 -and $f -lt 0.05) { continue }
+      $s = 1.4 + 1.2 * $f
+      $x = -10.0 - 1.2 * $f + 0.3 * [math]::Sin($cq.tc * 3 + $i)
+      $y = -6.5 - 7.0 * $f
+      U $(if ($f -lt 0.5) { $CN_ZD } else { $CN_FUMACA }) ($x - $s / 2) ($y - $s / 2) $s $s
+    }
+    return
+  }
+  U $CN_QBORDA (-12.5) (-1.0) 7.5 1.0                                     # base
+  U $CN_QPE (-12.0) (-6.0) 6.5 5.0                                        # tampa
+  $tela = $(if ($cq.fase -eq 'entra' -and ([int][math]::Floor($cq.a * 10)) % 2 -eq 0) { $CN_BUG } else { $CN_BUGD })
+  U $tela (-11.4) (-5.4) 5.3 3.8
 }
