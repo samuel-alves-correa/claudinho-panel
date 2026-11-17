@@ -37,14 +37,47 @@ namespace Cw {
     protected override CreateParams CreateParams {
       get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x00000080; return cp; }
     }
+    // atalho global (RegisterHotKey): se o registro falhar (atalho em uso), segue sem ele
+    public int HkMods, HkVk; public event EventHandler Hotkey;
+    protected override void OnHandleCreated(EventArgs e) {
+      base.OnHandleCreated(e);
+      if (HkVk != 0) { try { W.RegisterHotKey(Handle, 0x4357, (uint)(HkMods | 0x4000), (uint)HkVk); } catch { } }
+    }
+    protected override void OnHandleDestroyed(EventArgs e) {
+      if (HkVk != 0) { try { W.UnregisterHotKey(Handle, 0x4357); } catch { } }
+      base.OnHandleDestroyed(e);
+    }
     protected override void WndProc(ref Message m) {
+      if (m.Msg == 0x0312 && (int)m.WParam == 0x4357) { var h = Hotkey; if (h != null) h(this, EventArgs.Empty); return; }   // WM_HOTKEY
       if (m.Msg == 0x0021) { m.Result = (IntPtr)3; return; }   // WM_MOUSEACTIVATE -> MA_NOACTIVATE
       base.WndProc(ref m);
     }
   }
   public static class W {
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
-    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; }
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr c);
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromPoint(PT pt, uint flags);
+    [DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr h, int type, out uint x, out uint y);
+    [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr h, int id, uint mod, uint vk);
+    [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr h, int id);
+    public static bool PerMon;
+    // per-monitor v2 (Win10 1703+); senao o DPI do sistema
+    public static void InitDpi() {
+      try { PerMon = SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
+      if (!PerMon) { try { SetProcessDPIAware(); } catch { } }
+    }
+    // escala (DPI/96) do monitor que contem o retangulo; 0 = nao sabe (usa o DPI do sistema)
+    public static double MonScale(Rectangle b) {
+      if (!PerMon) return 0;
+      try {
+        PT p; p.X = b.Left + b.Width / 2; p.Y = b.Top + b.Height / 2;
+        IntPtr m = MonitorFromPoint(p, 2); uint x, y;
+        if (m != IntPtr.Zero && GetDpiForMonitor(m, 0, out x, out y) == 0 && x > 0) return x / 96.0;
+      } catch { }
+      return 0;
+    }
     [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int k);
     [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint a, uint b, ref int c, uint d);
     [DllImport("user32.dll", EntryPoint = "SystemParametersInfo")] static extern bool SpiRect(uint a, uint b, ref RECT c, uint d);
@@ -52,7 +85,6 @@ namespace Cw {
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
-    [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     // resolucao do relogio do processo (Sleep de 1 ms na Pulse)
     [DllImport("winmm.dll")] public static extern uint timeBeginPeriod(uint p);
@@ -66,7 +98,7 @@ namespace Cw {
       return Rectangle.FromLTRB(r.L, r.T, r.R, r.B);
     }
     // 1 = a janela em primeiro plano cobre o monitor principal inteiro; 0 = nao; -1 = nao sabe (mantem como esta)
-    public static int Fullscreen(int self) {
+    public static int Fullscreen(int self, int ml, int mt, int mr, int mb) {
       IntPtr h = GetForegroundWindow();
       if (h == IntPtr.Zero) return -1;
       uint pid; GetWindowThreadProcessId(h, out pid);
@@ -75,8 +107,7 @@ namespace Cw {
       if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") return 0;
       if (IsZoomed(h)) return 0;   // maximizada (com barra de tarefas oculta tambem cobre a tela)
       RECT r; if (!GetWindowRect(h, out r)) return -1;
-      int cx = GetSystemMetrics(0), cy = GetSystemMetrics(1);
-      return (r.L <= 0 && r.T <= 0 && r.R >= cx && r.B >= cy) ? 1 : 0;
+      return (r.L <= ml && r.T <= mt && r.R >= mr && r.B >= mb) ? 1 : 0;
     }
   }
   // timer de quadros: o Timer do WinForms arredonda para o tick do sistema (~15,6 ms), entao 33 ms viram ~47 ms (21 fps).
@@ -108,10 +139,23 @@ namespace Cw {
   }
 }
 '@
-[void][Cw.W]::SetProcessDPIAware()
+[Cw.W]::InitDpi()
 [System.Windows.Forms.Application]::EnableVisualStyles()
-$gs0 = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $script:S = $gs0.DpiX / 96.0; $gs0.Dispose()
-$script:wa = [Cw.W]::WorkArea()
+# monitor escolhido (DeviceName salvo na config; '' ou inexistente = principal): area de trabalho, limites e escala (DPI do monitor)
+$script:monitor = ''
+function Get-Mon {
+  if ($script:monitor) { foreach ($sc in [System.Windows.Forms.Screen]::AllScreens) { if ($sc.DeviceName -eq $script:monitor) { return $sc } } }
+  [System.Windows.Forms.Screen]::PrimaryScreen
+}
+function Refresh-Mon {
+  $sc = Get-Mon
+  $script:monB = $sc.Bounds
+  $script:wa = $(if ($sc.Primary) { [Cw.W]::WorkArea() } else { $sc.WorkingArea })
+  $d = [Cw.W]::MonScale($sc.Bounds)
+  if ($d -le 0) { $gs0 = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $d = $gs0.DpiX / 96.0; $gs0.Dispose() }
+  $script:S = $d
+}
+Refresh-Mon
 
 # ---------- paleta (contraste >= 3:1 sobre preto nos elementos graficos) ----------
 # fundo grafite quente (paleta do Claude) em vez de preto puro; $BLACK manteve o nome por ser usado em recortes
@@ -956,6 +1000,19 @@ function Draw-Balloon($g, [string]$bal, [bool]$dr, [double]$nowMs) {
 $form = New-Object Cw.NForm
 $form.FormBorderStyle = 'None'; $form.TopMost = $true; $form.ShowInTaskbar = $false
 $form.StartPosition = 'Manual'; $form.BackColor = $BLACKC
+# atalho global: abre/fecha (fixa/solta) o balao do mascote. CW_HOTKEY=0 desliga; ex. CW_HOTKEY=ctrl+shift+k
+$hk = $(if ($env:CW_HOTKEY) { $env:CW_HOTKEY } else { 'ctrl+alt+c' })
+if ($hk -ne '0') {
+  try {
+    $mods = 0; $vk = 0
+    foreach ($part in ($hk.ToLower() -split '\+')) {
+      $pt = $part.Trim()
+      switch ($pt) { 'alt' { $mods = $mods -bor 1 } 'ctrl' { $mods = $mods -bor 2 } 'shift' { $mods = $mods -bor 4 } 'win' { $mods = $mods -bor 8 }
+        default { if ($pt.Length -eq 1) { $vk = [int][char]$pt.ToUpper() } } }
+    }
+    if ($vk -ne 0 -and $mods -ne 0) { $form.HkMods = $mods; $form.HkVk = $vk }
+  } catch { }
+}
 $script:top = $script:wa.Top + 70 * $script:S
 # config salva: posicao, modo reduzido e reduzir movimento (o balao fixado nao persiste; "pin" de configs antigas e ignorado)
 $CFG = $(if ($env:CW_CFG) { $env:CW_CFG } else { "$env:USERPROFILE\.claude\claudinho-widget.json" })
@@ -963,11 +1020,13 @@ $PIDF = "$env:USERPROFILE\.claude\claudinho-widget.pid"
 try {
   if (Test-Path -LiteralPath $CFG) {
     $sv = Get-Content -LiteralPath $CFG -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($sv.monitor) { $script:monitor = [string]$sv.monitor; Refresh-Mon; $script:top = $script:wa.Top + 70 * $script:S }
     if ($null -ne $sv.top -and [double]$sv.top -ge $script:wa.Top -and [double]$sv.top -le ($script:wa.Bottom - 60)) { $script:top = [double]$sv.top }
     if ($null -ne $sv.compact) { $script:compact = [bool]$sv.compact }
     if ($null -ne $sv.reduceMotion) { $script:reducePref = [bool]$sv.reduceMotion }
   }
 } catch { }
+if ($env:CW_MONITOR) { $script:monitor = $env:CW_MONITOR; Refresh-Mon; $script:top = $script:wa.Top + 70 * $script:S }
 if ($env:CW_TOP) { try { $script:top = [double]$env:CW_TOP } catch { } }
 if ($env:CW_COMPACT) { $script:compact = ($env:CW_COMPACT -eq '1') }
 $pinMap = @{ mascot = 'mascot'; limits = 'five_hour'; ctx = 'ctx'; sub = 'sub' }
@@ -976,7 +1035,7 @@ function Save-Cfg {
   try {
     $d = Split-Path -Parent $CFG
     if (-not (Test-Path -LiteralPath $d)) { $null = New-Item -ItemType Directory -Path $d -Force }
-    (@{ top = [int]$script:top; compact = [bool]$script:compact; reduceMotion = [bool]$script:reducePref } | ConvertTo-Json -Compress) | Set-Content -LiteralPath $CFG -Encoding UTF8
+    (@{ top = [int]$script:top; compact = [bool]$script:compact; reduceMotion = [bool]$script:reducePref; monitor = [string]$script:monitor } | ConvertTo-Json -Compress) | Set-Content -LiteralPath $CFG -Encoding UTF8
   } catch { }
 }
 # PID para o mod fechar so este processo
@@ -1032,10 +1091,10 @@ function Apply-Geo {
 }
 # area de trabalho e DPI podem mudar (resolucao, barra de tarefas, escala): reconsulta barata a cada 2 s
 function Check-Screen {
-  $r = [Cw.W]::WorkArea()
-  $gs = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $s2 = $gs.DpiX / 96.0; $gs.Dispose()
-  if ($s2 -ne $script:S) {
-    $script:S = $s2
+  $s0 = $script:S; $wa0 = $script:wa
+  Refresh-Mon
+  $s2 = $script:S; $r = $script:wa; $script:wa = $wa0
+  if ($s2 -ne $s0) {
     $script:mg.ResetTransform(); $script:mg.ScaleTransform([single]$s2, [single]$s2)
     $script:boundsKey = ''; $script:shapeKey = ''; $script:forceView = $true
   }
@@ -1129,18 +1188,32 @@ $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $miCompact = New-Object System.Windows.Forms.ToolStripMenuItem 'Reduzir'
 $miCompact.Add_Click({ Toggle-Compact })
 $miPin = New-Object System.Windows.Forms.ToolStripMenuItem 'Fixar balão'
-$miPin.Add_Click({
+function Toggle-Pin {
   if ($script:pinned) { $script:pinned = ''; $script:hov = ''; $script:hovCand = '' } else { $script:pinned = $(if ($script:openKey) { $script:openKey } else { 'mascot' }) }
   $script:inval = $true; Save-Cfg
-})
+}
+$miPin.Add_Click({ Toggle-Pin })
+$form.Add_Hotkey({ try { Toggle-Pin } catch { } })
 $miRm = New-Object System.Windows.Forms.ToolStripMenuItem 'Reduzir movimento'
 $miRm.Add_Click({ $script:reducePref = -not $script:reducePref; Calc-Rm; $script:inval = $true; Save-Cfg })
+$miMon = New-Object System.Windows.Forms.ToolStripMenuItem 'Monitor'
+function Set-Monitor([string]$n) { $script:monitor = $n; Check-Screen; $script:boundsKey = ''; $script:inval = $true; Save-Cfg }
 $miFollow = New-Object System.Windows.Forms.ToolStripMenuItem 'Seguir a sessão mais urgente'
 $miFollow.Add_Click({ if ($script:selSid) { Select-Sess $script:selSid } })
 $miClose = New-Object System.Windows.Forms.ToolStripMenuItem 'Fechar'
 $miClose.Add_Click({ $form.Close() })
-$menu.Items.AddRange([System.Windows.Forms.ToolStripItem[]]@($miCompact, $miPin, $miRm, $miFollow, (New-Object System.Windows.Forms.ToolStripSeparator), $miClose))
+$menu.Items.AddRange([System.Windows.Forms.ToolStripItem[]]@($miCompact, $miPin, $miRm, $miMon, $miFollow, (New-Object System.Windows.Forms.ToolStripSeparator), $miClose))
 $menu.Add_Opening({
+  $miMon.DropDownItems.Clear()
+  $cur = (Get-Mon).DeviceName; $i = 0
+  foreach ($sc in [System.Windows.Forms.Screen]::AllScreens) {
+    $i++
+    $mi = New-Object System.Windows.Forms.ToolStripMenuItem ('{0}{1} ({2}x{3})' -f $i, $(if ($sc.Primary) { ' - principal' } else { '' }), $sc.Bounds.Width, $sc.Bounds.Height)
+    $mi.Tag = $(if ($sc.Primary) { '' } else { $sc.DeviceName }); $mi.Checked = ($sc.DeviceName -eq $cur)
+    $mi.Add_Click({ param($s, $e) Set-Monitor ([string]$s.Tag) })
+    [void]$miMon.DropDownItems.Add($mi)
+  }
+  $miMon.Visible = ($miMon.DropDownItems.Count -gt 1)
   $miFollow.Visible = [bool]$script:selSid
   $miCompact.Text = $(if ($script:compact) { 'Expandir' } else { 'Reduzir' })
   $miPin.Text = $(if ($script:pinned) { 'Soltar balão' } else { 'Fixar balão' })
@@ -1224,7 +1297,7 @@ $form.Add_Paint({ try {
   # o fundo preto ja e a faixa e o balao (a Region recorta a forma); so os baloes com tempos ("ha 5 s", "reinicia em") mudam sozinhos
   $tb = ''; if (-not $v.off -and (-not $script:compact -or ($geo.open -and ($geo.item.bal -eq 'mascot' -or $geo.item.bal -eq 'limits')))) { $tb = [math]::Floor($nowMs / 1000) }   # relogios da faixa e do balao
   $cs = $form.ClientSize
-  $lk = '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $script:shapeKey, $cs.Width, $cs.Height, $script:viewVer, $script:compact, $openK, $tb
+  $lk = '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f $script:S, $script:shapeKey, $cs.Width, $cs.Height, $script:viewVer, $script:compact, $openK, $tb
   if ($lk -ne $script:layKey -or -not $script:lay) {
     if ($script:lay) { $script:lay.Dispose(); $script:lay = $null }
     $script:layKey = $lk
@@ -1310,7 +1383,7 @@ $timer.Add_Tick({ try {
   # tela cheia no monitor principal: esconde ate sair
   if (($now - $script:lastFs) -ge 0.5) {
     $script:lastFs = $now
-    $fs = [Cw.W]::Fullscreen($PID)
+    $fs = [Cw.W]::Fullscreen($PID, $script:monB.Left, $script:monB.Top, $script:monB.Right, $script:monB.Bottom)
     if ($fs -eq 1 -and $form.Visible) { $menu.Close(); $form.Hide() }
     elseif ($fs -eq 0 -and -not $form.Visible) { $form.Show(); $script:inval = $true }
   }

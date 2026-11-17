@@ -158,6 +158,9 @@ async function publish($: Dollar, offline = false, sidOverride = '') {
 // Atualiza o estado + a linha de status (plano B, sempre visível).
 async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> = {}, loud = false) {
   const now = await $.clock.now()
+  const prev: St = await read($, st)
+  // som só na transição para o alerta (waiting+loud), não a cada atualização do alerta
+  const alertNow = mode === 'waiting' && loud && !(prev.mode === 'waiting' && prev.loud)
   await update($, st, (s: St) => ({
     ...s, mode, loud, label, labelShort: extra.labelShort ?? label, since: now,
     sessionStart: s.sessionStart || now,
@@ -171,6 +174,25 @@ async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> 
   }))
   await publish($)
   await refreshStatus($)
+  if (alertNow) await playAlert($)
+}
+
+// Som de alerta (Windows: som do sistema; $.audio.play não toca em Windows). Opt-out: /claudinho som off.
+async function playAlert($: Dollar) {
+  try {
+    if ((await $.store.get('sound')) === 'off') return
+    const os = (await $.env.get('OS')) || ''
+    if (!os.toLowerCase().includes('windows')) return
+    // sem await: o som não atrasa o estado; o sleep deixa o powershell vivo até o som tocar
+    void $.process.run(['powershell', '-NoProfile', '-Command',
+      '[System.Media.SystemSounds]::Exclamation.Play(); Start-Sleep -Milliseconds 1200']).catch(() => undefined)
+  } catch { /* som é só um extra: nunca atrapalha */ }
+}
+
+// Abre o widget (sem fechar um existente: o mutex do widget evita duplicata).
+async function launchWidget($: Dollar) {
+  await publish($)
+  await $.process.run(['cmd', '/c', widgetCmd($)])
 }
 
 // Linha de status (plano B): estado exibido + label; com subagente rodando, Sua vez/Ocioso viram Agentes.
@@ -215,9 +237,14 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const now = await $.clock.now()
     await update($, st, () => ({ ...INITIAL, counts: {}, history: [], sessionStart: now, since: now }))
-    await $.command.register({ name: 'claudinho', description: 'Widget do Claudinho na borda da tela: on | off | mascote <nome> | lista' })
+    await $.command.register({ name: 'claudinho', description: 'Widget do Claudinho na borda da tela: on | off | auto on|off | som on|off | mascote <nome> | lista' })
     await publish($)
     publishedAt = now
+    // abre o widget sozinho (opt-out: /claudinho auto off ou CW_AUTOSTART=0)
+    try {
+      const envOff = ((await $.env.get('CW_AUTOSTART')) || '').trim() === '0'
+      if (!envOff && (await $.store.get('auto')) !== 'off') await launchWidget($)
+    } catch { /* nunca impede a sessão de iniciar */ }
     cancelTick?.()
     // 1x por segundo; só mexe no estado quando há transição e republica a cada 5 s (heartbeat: `ts`)
     const t = $.clock.every(TICK_MS, async () => {
@@ -275,9 +302,11 @@ export const register: Register = on => {
         await update($, st, (s: St) => ({ ...INITIAL, counts: {}, history: [], sessionStart: now, since: now, limits: s.limits ?? [] }))
         agentSig = ''
         subAsk = false
-        // se o id novo já valer, publica agora; senão o heartbeat do tick publica
+        // se o id novo já valer, publica agora; senão (id ainda o antigo, publish vira no-op)
+        // zera publishedAt para o próximo tick (1 s) publicar o id novo
         await publish($)
-        publishedAt = now
+        const cur = String(await $.session.id())
+        publishedAt = cur === e.sessionId ? 0 : now
       } catch { /* nunca impede o /clear */ }
     }
     return next(e)
@@ -328,6 +357,26 @@ export const register: Register = on => {
       const labelShort = target(rec) || tool
       await setMode($, READ.has(tool) ? 'reading' : 'coding', text, { labelShort, tool })
     }
+    return next(e)
+  })
+
+  // tool.run: a chamada foi liberada (permissão concedida) e vai rodar -> sai do alerta de permissão.
+  // Perguntas/planos (ASKS) não: a ferramenta roda justamente esperando a sua resposta.
+  on('tool.run', async ($, e, next) => {
+    try {
+      const tool = e.tool as string
+      if (!ASKS[tool]) {
+        if (fromSub(e)) {
+          if (subAsk) { subAsk = false; await resumeMain($) }
+        } else {
+          const s: St = await read($, st)
+          if (s.mode === 'waiting' && s.loud && (s.askKind === 'permissao' || s.askKind === 'aviso')) {
+            const rec = e as unknown as Record<string, unknown>
+            await setMode($, READ.has(tool) ? 'reading' : 'coding', detail(tool, rec), { labelShort: target(rec) || tool, tool })
+          }
+        }
+      }
+    } catch { /* só informativo */ }
     return next(e)
   })
 
@@ -402,9 +451,18 @@ export const register: Register = on => {
     }
     if (cmd === 'on' || !cmd) {
       await $.process.run(STOP_ARGV) // evita widget duplicado
-      await publish($)
-      await $.process.run(['cmd', '/c', widgetCmd($)])
+      await launchWidget($)
       return { text: 'Widget aberto na borda direita da tela.' }
+    }
+    if (cmd === 'auto' || cmd === 'som') {
+      const key = cmd === 'auto' ? 'auto' : 'sound'
+      const what = cmd === 'auto' ? 'Abrir o widget ao iniciar a sessão' : 'Som de alerta'
+      if (arg !== 'on' && arg !== 'off') {
+        const cur = ((await $.store.get(key)) as string) === 'off' ? 'off' : 'on'
+        return { text: `${what}: ${cur}. Uso: /claudinho ${cmd} on | off` }
+      }
+      await $.store.set(key, arg)
+      return { text: `${what}: ${arg}` }
     }
     if (cmd === 'lista') return { text: Object.entries(MASCOTS).map(([n, m]) => `${n} — ${m.label}`).join(', ') }
     if (cmd === 'mascote') {
@@ -413,6 +471,6 @@ export const register: Register = on => {
       await publish($)
       return { text: `Mascote: ${arg}` }
     }
-    return { text: 'Uso: /claudinho on | off | lista | mascote <nome>' }
+    return { text: 'Uso: /claudinho on | off | auto on|off | som on|off | lista | mascote <nome>' }
   })
 }

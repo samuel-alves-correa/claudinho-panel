@@ -42,10 +42,12 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 | `tool.call` (AskUserQuestion, ExitPlanMode) | 🟡 **Aguardando você** (em alerta) |
 | `classic.PermissionRequest` | 🟡 **Aguardando você** (em alerta: precisa de permissão) |
 | `classic.Notification` | 🟡 **Aguardando você** (em alerta, exceto `idle_prompt`) |
+| `tool.run` | ferramenta liberada para rodar: se estava em 🟡 por permissão/aviso, volta na hora a Codando/Lendo (não vale para AskUserQuestion/ExitPlanMode); também libera o alerta de subagente |
 | `classic.PostToolUse` | volta a 🧠 Pensando; mantém Codando/Lendo visível por pelo menos 1,5 s |
 | `classic.PostToolUseFailure` | só entra no histórico (`falhou: <ferramenta>`); o estado volta a 🧠 Pensando como no `PostToolUse` |
 | `classic.Stop` | ✅ **Terminou** por 4 s, depois 💬 **Sua vez**; grava `doneAt`, e o widget mantém o anel verde e "terminou há X" até você passar o mouse ou mandar outro prompt |
 | `turn.complete` | acumula tokens, lê contexto % e custo; se o turno acabou com erro, ❌ **Erro** por 4 s e depois 💬 Sua vez |
+| `session.start` | abre o widget automaticamente (sem fechar um já aberto); desliga com `/claudinho auto off` ou `CW_AUTOSTART=0` |
 | `session.end` | grava `offline: true` no arquivo da sessão |
 | timer de 1 s | 2 min sem atividade viram 😴 **Ocioso**; fim do flash de ✅/❌; relê os limites de uso 1x por minuto; heartbeat a cada 5 s |
 
@@ -64,6 +66,13 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 
 ## Instalação (outra sessão ou máquina)
 
+Pelo marketplace (o próprio repositório é um marketplace):
+```
+/plugin install claudinho-panel --marketplace samuel-alves-correa/claudinho-panel
+```
+
+Ou manualmente:
+
 1. Copie esta pasta para dentro da pasta de mods da sessão, ou use `--plugin-dir`:
    ```
    claude --plugin-dir C:\caminho\para\claudinho-panel
@@ -71,7 +80,7 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 2. Nenhum caminho precisa ser ajustado: o mod grava o estado em `%USERPROFILE%\.claude\claudinho\state\<sessionId>.json` e o widget lê essa mesma pasta por padrão (`-StateDir` só serve para testes). A pasta é fixa para não mudar quando o plugin é atualizado de versão.
    O widget guarda posição vertical (`top`), modo reduzido (`compact`) e redução de movimento (`reduceMotion`) em `%USERPROFILE%\.claude\claudinho-widget.json`, e o próprio PID em `%USERPROFILE%\.claude\claudinho-widget.pid` (é por ele que `/claudinho off` fecha só o widget). **Um widget só:** o script pega o mutex `Local\ClaudinhoWidget` ao abrir; se outro widget já o tem (launcher aberto na mão, dois `/claudinho on` ao mesmo tempo em sessões diferentes), o novo espera até 3 s e sai sem abrir janela nem mexer no `.pid`. `CW_NO_PID=1` pula a trava (testes com outro widget aberto).
 3. Valide: `claude plugin validate <pasta>` (deve passar sem erros de tipo).
-4. Dentro do Claude Code, rode `/claudinho on`.
+4. O widget abre sozinho no início da sessão; se estiver desligado, rode `/claudinho on`.
 
 ## Uso
 
@@ -81,6 +90,8 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 | `/claudinho off` | fecha o widget (também dá para fechar pelo menu do botão direito) |
 | `/claudinho lista` | lista os mascotes |
 | `/claudinho mascote azul` | troca a paleta (`coral`, `azul`, `verde`) |
+| `/claudinho auto on\|off` | liga/desliga abrir o widget no início da sessão (salvo; `CW_AUTOSTART=0` também desliga) |
+| `/claudinho som on\|off` | liga/desliga o som do sistema ao entrar em 🟡 em alerta (salvo; só Windows) |
 
 **Widget (notch):** faixa preta de ~72 px colada na borda direita do monitor principal, com cantos esquerdos arredondados e alargamento côncavo em cima e embaixo. De cima para baixo:
 
@@ -94,7 +105,9 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 
 - **Balão por item:** passe o mouse num item (abre após ~180 ms) e aparece à esquerda um balão grafite com seta apontando para ele. **Clique num item fixa o balão dele; outro clique solta.** O pino não é salvo (some ao reiniciar) e, com o Claude Code fechado, o balão só abre ao passar o mouse; clicar no próprio balão aberto ou em qualquer lugar fora do widget fecha. Se o item fixado não existir no momento, aparece o balão do mascote. Mascote: estado, projeto, o que faz/pede, modelo, sessão/turno e atividade recente. 5h e 7d: janelas de uso com barra e "reinicia em…". ctx: barra, tokens, entrada/saída/custo, cache e ferramentas. sub: descrição e modelo de cada subagente. Ao sair da janela, o balão fecha após ~400 ms; o balão acompanha o conteúdo e nunca sai da tela.
 - **Modo reduzido:** duplo clique no mascote (ou "Reduzir" / "Expandir" no menu) para deixar só a bolinha do mascote, sem o nome do estado e sem as linhas de uso (~110 px de altura). A cor do anel continua dizendo o estado, o balão do mascote ganha o resumo `5h · 7d · ctx · sub`, e um **selo com "!"** no anel avisa quando o maior entre 5 h, 7 dias e contexto chega a 75% (âmbar) ou a 90% (vermelho). A escolha fica salva.
-- **Arraste** na vertical (mais de 3 px) para mudar a posição. **Botão direito:** "Reduzir" ou "Expandir", "Fixar balão" ou "Soltar balão", "Reduzir movimento" (marcável) e "Fechar".
+- **Arraste** na vertical (mais de 3 px) para mudar a posição. **Botão direito:** "Reduzir" ou "Expandir", "Fixar balão" ou "Soltar balão", "Reduzir movimento" (marcável), "Monitor" (submenu com as telas; só aparece com 2 ou mais) e "Fechar".
+- **Atalho global Ctrl+Alt+C:** fixa/solta o balão do mascote sem roubar o foco. `CW_HOTKEY=0` desliga; `CW_HOTKEY=ctrl+shift+k` troca (um modificador e uma letra). Se a combinação já estiver em uso por outro programa, o widget segue sem atalho.
+- **Monitor:** a escolha fica salva no campo `monitor` do config (DeviceName, ex.: `\\.\DISPLAY2`); se a tela sumir, volta ao principal. A posição vertical é só limitada à área da nova tela.
 - Em **Aguardando você** (alerta) o balão do mascote abre sozinho, com o pedido em até 3 linhas. Um clique no widget dispensa o balão; ele só reabre num alerta novo.
 - Sem estado ainda (pasta vazia), a faixa mostra só o mascote parado e o balão diz "Aguardando o Claude Code…".
 - A janela não rouba o foco do terminal nem aparece no Alt+Tab, e se esconde enquanto houver uma janela em tela cheia no monitor principal. Área de trabalho e DPI são reconsultados a cada 2 s.
@@ -104,7 +117,7 @@ Não há botão X na superfície: para fechar use o menu do botão direito ou `/
 A redução de movimento segue a configuração de animações do Windows, o item "Reduzir movimento" do menu e `CW_REDUCE_MOTION=1` (sem pulso, giros e pulos; a altura da faixa muda direto).
 Para abrir com o Windows, coloque um atalho de `widget/iniciar-widget.cmd` em `shell:startup`.
 Para rodar sem o Claude: `powershell -STA -File widget\claudinho-widget.ps1 -StateDir <pasta>`.
-Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fixado (útil para capturas de tela); `CW_TOP=<px>` força a posição vertical; `CW_COMPACT=0|1` força expandido/reduzido; `CW_NO_PID=1` não grava nem apaga o `.pid` e `CW_CFG=<arquivo>` usa outra config (para testar com outro widget aberto).
+Depuração: `CW_MONITOR=<DeviceName>` força o monitor (precede o config); `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fixado (útil para capturas de tela); `CW_TOP=<px>` força a posição vertical; `CW_COMPACT=0|1` força expandido/reduzido; `CW_NO_PID=1` não grava nem apaga o `.pid` e `CW_CFG=<arquivo>` usa outra config (para testar com outro widget aberto).
 
 **Criar outro mascote:** em `hooks/mascots.ts` copie uma entrada de `MASCOTS` e mude a paleta. Para mudar o desenho, edite `Draw-Mascot` em `widget/claudinho-widget.ps1` (o corpo é montado com retângulos em "unidades de pixel", função `U`).
 
@@ -140,11 +153,13 @@ Campos do JSON por estado: `name` (nome completo, título do balão), `short` (n
 
 ## Limitações conhecidas
 
-- Depois de você aprovar uma permissão, o estado 🟡 só muda no próximo hook (`PostToolUse`); não há evento "permissão concedida". Em um comando longo pode demorar.
-- O widget é só para **Windows** (PowerShell 5.1 + WinForms) e só no monitor principal.
+- Em pergunta (`AskUserQuestion`) ou plano (`ExitPlanMode`), o 🟡 só sai no `PostToolUse`, porque a ferramenta roda enquanto espera a resposta. Permissões saem na hora via `tool.run`.
+- O som de alerta usa o som do sistema do Windows (`$.audio.play` só toca no macOS); em outros sistemas fica mudo.
+- O widget é só para **Windows** (PowerShell 5.1 + WinForms) e fica sempre na borda direita (a esquerda exigiria espelhar balão, setas e hit-tests).
+- DPI por monitor exige Windows 10 1703+ (antes disso, usa o DPI do sistema); uma troca de escala aparece em até 2 s.
 - Um mod não consegue desenhar fora do Claude Code; por isso o widget é um processo separado que lê o JSON.
-- Sem acesso por teclado nem leitor de tela: tudo depende do mouse. DPI é o do sistema, não por monitor.
-- Depois de um `/clear` o mod marca o id antigo como offline e segue publicando sob o novo id; isso ainda não foi exercitado em uso real.
+- Sem leitor de tela; pelo teclado só o atalho do balão.
+- Depois de um `/clear` o mod marca o id antigo como offline e publica o novo id no tick seguinte (até 1 s); o fluxo foi revisado no código, mas ainda não exercitado em uso real.
 - O painel lateral do terminal (`$.ui.open`) foi **removido de propósito**: ocupava espaço e fazia o chat piscar. O mod não registra mais hook `ui.render`.
 
 ## Armadilhas que já encontramos (para quem for mexer)
@@ -165,7 +180,5 @@ Campos do JSON por estado: `name` (nome completo, título do balão), `short` (n
 
 ## Ideias para continuar
 
-- Detectar "permissão concedida" para sair do 🟡 na hora.
-- Atalho global de teclado para abrir o balão; DPI por monitor; escolher monitor e borda.
-- Iniciar o widget automaticamente no `session.start` (hoje é manual, via `/claudinho on`).
-- Notificação sonora (`$.audio.play`) quando entrar em 🟡 em alerta.
+- Escolher a borda (esquerda/direita); tratar `WM_DPICHANGED` para a escala mudar na hora.
+- LICENSE e ícone, se for submeter ao diretório de plugins (o validador avisa).

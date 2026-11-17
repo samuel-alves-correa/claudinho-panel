@@ -1,0 +1,11 @@
+{
+  "name": "claudinho-panel",
+  "owner": { "name": "samuel-alves-correa" },
+  "plugins": [
+    {
+      "name": "claudinho-panel",
+      "source": "./",
+      "description": "Mascote em pixel art num notch na borda da tela que mostra o estado do agente e o uso da sessão."
+    }
+  ]
+}
