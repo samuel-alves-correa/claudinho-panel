@@ -38,7 +38,8 @@ $CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
 # cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
-$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6 }
+$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5 }
+$CN_LAMPF = '#8a7a3a'; $CN_LAMPM = '#c9ad4a'; $CN_LAMPA = '#ffe066'   # lampada fraca, piscando e acesa
 $CN_AGULHA = '#c8c6bf'   # agulha da costura (a linha usa $CN_PINCEL)
 $CN_TELA = '#0d1117'   # fundo do terminal (a moldura cinza separa do preto do anel)
 
@@ -199,6 +200,19 @@ $script:CENAS = @{
       @{ ate = 0.4; ox = -4.0; eyX = 1.0; eyes = 'happy' }
       @{ ate = 0.7; ox = -2.0; wf = 8.0 }
     )) }
+  # Pensando: lampada fraca piscando sobre a cabeca, ele olha para cima; ao sair do Pensando ela acende forte e ele pula
+  'lampada' = @{ prio = 0.5; estado = $true; semRm = $true
+    entra = (CN-Seq @( @{ ate = 0.4; eyY = -15.5 } ))
+    laco = (CN-Seq @(
+      @{ ate = 1.5; eyY = -15.5; eyX = -0.5 }
+      @{ ate = 2.2; eyY = -15.5; eyX = 0.5 }
+      @{ ate = 3.0; eyY = -15.5; eyX = 0.5; tilt = $true }
+    ))
+    sai = (CN-Seq @(
+      @{ ate = 0.15; eyY = -15.5 }
+      @{ ate = 0.35; oy = -1.5; eyes = 'happy'; armR = -2.0 }
+      @{ ate = 0.7; eyes = 'happy' }
+    )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -216,6 +230,7 @@ function CN-EhEst([string]$id) { $d = $script:CENAS[$id]; [bool]($d -and $d.esta
 # cena do estado que o modo atual pede ('' = nenhuma)
 function CN-Estado($v, [string]$mode, [string]$fam) {
   $tool = [string]$v.tool
+  if ($mode -eq 'thinking') { return 'lampada' }
   if ($mode -eq 'coding' -and $tool -eq 'Bash') { return 'terminal' }
   if ($mode -eq 'coding' -and ($tool -eq 'Edit' -or $tool -eq 'MultiEdit' -or $tool -eq 'NotebookEdit')) { return 'costura' }
   ''
@@ -317,7 +332,8 @@ function Cena-Gatilhos($v, [double]$t) {
   #    (a aguardando sobrevive a ocupado <-> calmo enquanto houver subagentes)
   if ($c -and $mudouFam -and $c.id -ne 'aterrissa' -and -not ((CN-EhAg $c.id) -and $querAg)) {
     # o quadro sai girando; as cenas de subagente tocam a saida (pulo) quando eles acabam e ele fica parado; o resto some
-    if ($c.id -eq 'quadro' -or ((CN-EhAg $c.id) -and $fam -eq 'calmo')) { Cena-Parar $t } else { Cena-Fim $t; $c = $null }
+    # (a lampada tambem sai acendendo: ela marca o fim do Pensando)
+    if ($c.id -eq 'quadro' -or $c.id -eq 'lampada' -or ((CN-EhAg $c.id) -and $fam -eq 'calmo')) { Cena-Parar $t } else { Cena-Fim $t; $c = $null }
   }
 
   # 4) ferramenta falhou (failAt novo): inseto
@@ -443,6 +459,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'pescaria' { CN-Pescaria $cq $camada $t }
     'terminal' { if ($camada -eq 'atras') { CN-Terminal $cq $t } }
     'costura' { if ($camada -eq 'frente') { CN-Costura $cq } }
+    'lampada' { if ($camada -eq 'frente') { CN-Lampada $cq $t } }
   }
 }
 
@@ -863,4 +880,22 @@ function CN-Costura($cq) {
   $sx = $ag[0] + 2.25 * ($r - 1); $sy = $ag[1]
   CN-Linha 8.0 (-10.0) $sx $sy $CN_PINCEL 0.6
   U $CN_AGULHA ($sx - 0.25) $sy 0.5 2.4
+}
+
+# ---------- lampada (Pensando) ----------
+# Lampada de 3 x 3,6 sobre a cabeca (x -1,5..1,5, y -22,6..-17,8; cantos a <= 14,6 do centro); fica parada no pulo da saida.
+# Laco: fraca, com piscadas curtas; saida: acesa forte, com 4 raios.
+function CN-Lampada($cq, [double]$t) {
+  $dy = 0.0
+  $cor = $CN_LAMPF
+  if ($cq.fase -eq 'entra' -and $cq.a -lt 0.2) { $cor = $CN_QPE }                        # ainda apagada
+  elseif ($cq.fase -eq 'sai') { $cor = $CN_LAMPA }
+  elseif ((($t * 1.3) % 1.0) -lt 0.08 -or ((($t * 1.3) + 0.37) % 1.0) -lt 0.04) { $cor = $CN_LAMPM }   # pisca
+  U $cor (-1.0) (-22.6 + $dy) 2.0 0.6
+  U $cor (-1.5) (-22.0 + $dy) 3.0 3.0
+  U $CN_QBORDA (-1.0) (-19.0 + $dy) 2.0 1.2                                                # rosca
+  if ($cq.fase -eq 'sai') {
+    U $CN_LAMPA (-3.4) (-21.5 + $dy) 0.8 0.8; U $CN_LAMPA 2.6 (-21.5 + $dy) 0.8 0.8
+    U $CN_LAMPA (-3.6) (-18.6 + $dy) 0.8 0.8; U $CN_LAMPA 2.8 (-18.6 + $dy) 0.8 0.8
+  }
 }
