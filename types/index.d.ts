@@ -38,6 +38,8 @@ export type St = {
   failAt: number
   /** tipo do pedido em waiting+loud; o widget mostra o quadro em 'pergunta' e 'plano' */
   askKind: AskKind
+  /** ferramenta da conversa principal rodando em Codando/Lendo ('' fora deles); o widget escolhe a cena por ela */
+  tool: string
 }
 
 export type AskKind = '' | 'pergunta' | 'plano' | 'permissao' | 'aviso'

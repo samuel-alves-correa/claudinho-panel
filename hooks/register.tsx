@@ -28,10 +28,10 @@ const INITIAL: St = {
   inTok: 0, outTok: 0, cacheTok: 0, hasUsage: false,
   ctxPct: null, usd: null, counts: {}, history: [],
   waitSince: 0, ask: '', ctxTok: null, ctxWin: null, labelShort: 'Ocioso',
-  agentModels: {}, limits: [], busy: false, failAt: 0, askKind: '',
+  agentModels: {}, limits: [], busy: false, failAt: 0, askKind: '', tool: '',
 }
 // Troque a tag quando mudar os campos de St: ela descarta o que a versão antiga guardou.
-const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-8' })
+const st = atom({ plugin: 'claudinho-panel', key: 'st' } as const, INITIAL, { shape: 'st-9' })
 
 const READ = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch'])
 // Ferramentas que pedem algo a você: label da linha de status e texto do pedido.
@@ -134,6 +134,7 @@ async function publish($: Dollar, offline = false, sidOverride = '') {
     ctxPct: s.ctxPct, usd: s.usd, ctxTok: s.ctxTok, ctxWin: s.ctxWin,
     ask: dm === 'waiting' ? s.ask : '', waitSince: dm === 'waiting' ? s.waitSince : 0,
     askKind: dm === 'waiting' && s.loud ? s.askKind : '', failAt: s.failAt,
+    tool: dm === 'coding' || dm === 'reading' ? s.tool : '',
     top: Object.entries(s.counts).sort((a, b) => b[1] - a[1]).slice(0, 5),
     history: s.history.slice(-6).reverse().map(h => ({ t: h.t, text: h.text })),
   }
@@ -164,6 +165,7 @@ async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> 
     waitSince: mode === 'waiting' ? (s.mode === 'waiting' && s.loud === loud ? s.waitSince : now) : 0,
     ask: mode === 'waiting' ? (extra.ask ?? (s.mode === 'waiting' ? s.ask : '')) : '',
     askKind: mode === 'waiting' && loud ? (extra.askKind ?? (s.mode === 'waiting' && s.loud ? s.askKind : '')) : '',
+    tool: '',
     ...extra,
     flashUntil: mode === 'done' || mode === 'error' ? now + FLASH_MS : 0,
   }))
@@ -324,7 +326,7 @@ export const register: Register = on => {
       await setMode($, 'waiting', asks.label, { ask: asks.ask, askKind: asks.kind }, true)
     } else {
       const labelShort = target(rec) || tool
-      await setMode($, READ.has(tool) ? 'reading' : 'coding', text, { labelShort })
+      await setMode($, READ.has(tool) ? 'reading' : 'coding', text, { labelShort, tool })
     }
     return next(e)
   })

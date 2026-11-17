@@ -559,7 +559,7 @@ function Update-View([double]$nowMs) {
     off = $true; mode = 'offline'; loud = $false; name = ''; ncol = $TEXT; shortTxt = ''; scol = $DIM; ring = 'quiet'; col = $TEXT
     rows = (New-Object System.Collections.ArrayList); agents = @(); agentsN = 0; hist = @(); top = @(); lim = @{}
     warn = ''; doneShow = $false; doneAt = 0.0; nextExp = 0.0; alertKey = ''; summary = ''; moreTxt = ''; rmState = $false
-    failAt = 0.0; askKind = ''
+    failAt = 0.0; askKind = ''; tool = ''
   }
   $B = '#d97757'; $D = '#a8553a'
   $pal = $script:lastPal
@@ -590,6 +590,7 @@ function Update-View([double]$nowMs) {
     $v.turnStart = $(if ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'error') { Num $cur.turnStart } else { 0.0 })
     $v.rmState = ($cur.reduceMotion -eq $true)
     $v.failAt = Num $cur.failAt; $v.askKind = [string]$cur.askKind   # gatilhos das cenas (inseto, quadro)
+    $v.tool = [string]$cur.tool   # ferramenta em Codando/Lendo (cenas terminal, costura, lupa)
     $v.alertKey = '{0}|{1}|{2}' -f $script:stateSid, $v.waitSince, $cur.ask
     # limites: sem leitura = nao aparece; janela ja reiniciou sem leitura nova = "—" (stale)
     foreach ($l in @($cur.limits)) {
