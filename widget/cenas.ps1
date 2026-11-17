@@ -37,6 +37,7 @@ $CN_VARA = '#8b6a4a'; $CN_LINHA = '#c8c6bf'; $CN_LINHAD = '#6b6b66'; $CN_AGUA = 
 # depois de $CN_AG_SONO s com subagentes rodando ele cansa e vai para o cochilo
 $CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
+$CN_CO_VEL = 1.6   # rad/s dos minis correndo em volta no cochilo (~4 s por volta)
 # cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
 $CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6; fumaca = 0.9; placa = 0.3 }
@@ -649,21 +650,24 @@ function CN-MiniX([int]$i, [int]$n, [double]$tc) {
 }
 
 # mini-Claudinho rosa (cor dos subagentes) em pe no chao; dir: 1 direita / -1 esquerda
-function CN-Mini([double]$x, [int]$dir, [bool]$caixa, [int]$passo, [double]$aceno) {
-  $e = $CN_MINI_E; $mb = $SUBC; $mi = '#1c1410'
-  U $mb ($x - 2 * $e) (-3.4 * $e) (4 * $e) (2.2 * $e)
-  U $mb ($x - 1.5 * $e) (-1.2 * $e) (0.8 * $e) ((1.2 - 0.5 * $passo) * $e)
-  U $mb ($x + 0.7 * $e) (-1.2 * $e) (0.8 * $e) ((0.7 + 0.5 * $passo) * $e)
+function CN-Mini([double]$x, [int]$dir, [bool]$caixa, [int]$passo, [double]$aceno, [double]$dy = 0.0, [double]$esc = 0.0) {
+  # dy: desloca o chao do mini (orbita com profundidade no cochilo); esc: escala (0 = $CN_MINI_E)
+  $e = $(if ($esc -gt 0) { $esc } else { $CN_MINI_E }); $mb = $SUBC; $mi = '#1c1410'
+  U $mb ($x - 2 * $e) (-3.4 * $e + $dy) (4 * $e) (2.2 * $e)
+  U $mb ($x - 1.5 * $e) (-1.2 * $e + $dy) (0.8 * $e) ((1.2 - 0.5 * $passo) * $e)
+  U $mb ($x + 0.7 * $e) (-1.2 * $e + $dy) (0.8 * $e) ((0.7 + 0.5 * $passo) * $e)
   $ex = $x + (-1.1 + 0.4 * $dir) * $e
-  U $mi $ex (-2.8 * $e) (0.6 * $e) (0.6 * $e); U $mi ($ex + 1.6 * $e) (-2.8 * $e) (0.6 * $e) (0.6 * $e)
+  U $mi $ex (-2.8 * $e + $dy) (0.6 * $e) (0.6 * $e); U $mi ($ex + 1.6 * $e) (-2.8 * $e + $dy) (0.6 * $e) (0.6 * $e)
   if ($caixa) {
-    U $mb ($x - 2.6 * $e) (-4.4 * $e) (0.6 * $e) (1.6 * $e); U $mb ($x + 2 * $e) (-4.4 * $e) (0.6 * $e) (1.6 * $e)   # bracos para cima
-    U $CN_CAIXA ($x - 1.6 * $e) (-5.6 * $e) (3.2 * $e) (1.8 * $e); U $CN_CAIXAD ($x - 1.6 * $e) (-4.8 * $e) (3.2 * $e) (0.4 * $e)
+    U $mb ($x - 2.6 * $e) (-4.4 * $e + $dy) (0.6 * $e) (1.6 * $e); U $mb ($x + 2 * $e) (-4.4 * $e + $dy) (0.6 * $e) (1.6 * $e)   # bracos para cima
+    U $CN_CAIXA ($x - 1.6 * $e) (-5.6 * $e + $dy) (3.2 * $e) (1.8 * $e); U $CN_CAIXAD ($x - 1.6 * $e) (-4.8 * $e + $dy) (3.2 * $e) (0.4 * $e)
   } elseif ($aceno -ge 0) {
-    U $mb ($x - 2.6 * $e) (-2.8 * $e) (0.6 * $e) (1 * $e)
-    U $mb ($x + 2 * $e) ((-5.0 + 0.6 * $aceno) * $e) (0.6 * $e) (1.8 * $e)          # tchau
+    U $mb ($x - 2.6 * $e) (-2.8 * $e + $dy) (0.6 * $e) (1 * $e)
+    U $mb ($x + 2 * $e) ((-5.0 + 0.6 * $aceno) * $e + $dy) (0.6 * $e) (1.8 * $e)          # tchau
   } else {
-    U $mb ($x - 2.6 * $e) (-2.8 * $e) (0.6 * $e) (1 * $e); U $mb ($x + 2 * $e) (-2.8 * $e) (0.6 * $e) (1 * $e)
+    # bracos balancando com o passo (correndo) ou parados
+    $ba = 0.4 * $passo
+    U $mb ($x - 2.6 * $e) ((-2.8 - $ba) * $e + $dy) (0.6 * $e) (1 * $e); U $mb ($x + 2 * $e) ((-3.2 + $ba) * $e + $dy) (0.6 * $e) (1 * $e)
   }
 }
 
@@ -721,8 +725,8 @@ function CN-Chefe($cq, [string]$camada, [double]$t) {
 function CN-CochiloKf($k, [double]$t, [double]$t0) {
   $kk = $k.Clone()
   if (-not $script:rm) { $kk.sy = 1.0 + 0.025 * [math]::Sin($t * 2.4) }   # respira
-  $ang = ($t - $t0) * 0.8
-  $kk.eyX = [math]::Cos($ang) * 1.0                                        # o olho aberto segue a 1a bolinha
+  $ang = ($t - $t0) * $CN_CO_VEL
+  $kk.eyX = [math]::Cos($ang) * 1.0                                        # o olho aberto segue o 1o mini
   $w = $t - $script:cnSaiu
   if ($script:cnSaiu -ge $t0 -and $w -ge 0 -and $w -lt 1.4) {             # um subagente terminou: acorda num pulo
     $kk.sy = 1.0; $kk.eyes = 'open'; $kk.eyX = 0.0
@@ -736,15 +740,18 @@ function CN-CochiloKf($k, [double]$t, [double]$t0) {
 function CN-Cochilo($cq, [string]$camada, [double]$t) {
   $tc = $cq.tc
   $acordado = ($cq.fase -eq 'sai') -or (($t - $script:cnSaiu) -ge 0 -and ($t - $script:cnSaiu) -lt 1.4 -and $script:cnSaiu -ge ($t - $tc))
-  # bolinhas rosa (uma por subagente) orbitando devagar, bem menores que na aguardando
+  # mini-Claudinhos rosa (um por subagente) correndo em volta dele no chao: na frente descem um pouco,
+  # atras sobem e passam por tras do corpo (profundidade)
   if ($cq.fase -ne 'sai') {
     $n = [math]::Max(1, [math]::Min(3, $script:cnAgN))
+    $passo = $(if ($cq.fixo) { 0 } else { ([int][math]::Floor($t * 10)) % 2 })
     for ($i = 0; $i -lt $n; $i++) {
-      $ang = $(if ($cq.fixo) { 0.6 + $i * 2.0944 } else { $tc * 0.8 + $i * 2.0944 })
+      $ang = $(if ($cq.fixo) { 0.6 + $i * 2.0944 } else { $tc * $CN_CO_VEL + $i * 2.0944 })
       $sn = [math]::Sin($ang)
       if (($camada -eq 'atras') -ne ($sn -lt 0)) { continue }
-      $x = [math]::Cos($ang) * 13.0; $y = -8.0 + $sn * 6.0
-      U $SUBC ($x - 0.6) ($y - 0.6) 1.2 1.2
+      $x = [math]::Cos($ang) * 12.0
+      $d = $(if ($sn -gt 0) { -1 } else { 1 })   # anda no sentido em que x muda (-sin)
+      CN-Mini $x $d $false $passo -1 ($sn * 2.5) 1.1
     }
   }
   if ($camada -ne 'frente') { return }
