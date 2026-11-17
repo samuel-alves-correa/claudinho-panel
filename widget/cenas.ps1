@@ -38,7 +38,8 @@ $CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
 # cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
-$CN_EST_ESPERA = @{ terminal = 0.6 }
+$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6 }
+$CN_AGULHA = '#c8c6bf'   # agulha da costura (a linha usa $CN_PINCEL)
 $CN_TELA = '#0d1117'   # fundo do terminal (a moldura cinza separa do preto do anel)
 
 # ---------- estado ----------
@@ -186,6 +187,18 @@ $script:CENAS = @{
       @{ ate = 0.5; ox = 3.0; eyX = -1.0; eyes = 'happy' }
       @{ ate = 0.8; ox = 1.5; wf = 8.0 }
     )) }
+  # Codando com Edit: tira um pedaco de uma faixa de "codigo" (traco vermelho) e costura um novo (verde) no lugar com
+  # agulha e linha (quadro dinamico em CN-CosturaKf)
+  'costura' = @{ prio = 0.5; estado = $true; semRm = $true
+    entra = (CN-Seq @(
+      @{ ate = 0.2; ox = -2.0; wf = 8.0 }
+      @{ ate = 0.4; ox = -4.0; eyX = 1.0; eyY = -12.5 }
+    ))
+    laco = (CN-Seq @( @{ ate = 3.2; ox = -4.0; eyX = 1.0; eyY = -12.5 } ))
+    sai = (CN-Seq @(
+      @{ ate = 0.4; ox = -4.0; eyX = 1.0; eyes = 'happy' }
+      @{ ate = 0.7; ox = -2.0; wf = 8.0 }
+    )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -204,6 +217,7 @@ function CN-EhEst([string]$id) { $d = $script:CENAS[$id]; [bool]($d -and $d.esta
 function CN-Estado($v, [string]$mode, [string]$fam) {
   $tool = [string]$v.tool
   if ($mode -eq 'coding' -and $tool -eq 'Bash') { return 'terminal' }
+  if ($mode -eq 'coding' -and ($tool -eq 'Edit' -or $tool -eq 'MultiEdit' -or $tool -eq 'NotebookEdit')) { return 'costura' }
   ''
 }
 function CN-Fam([string]$mode, [bool]$loud) {
@@ -376,6 +390,7 @@ function Cena-Passo([double]$t) {
     elseif ($c.id -eq 'chefe' -and $c.fase -eq 'laco') { $k = CN-ChefeKf $k $t ($t - $c.t0) }
     elseif ($c.id -eq 'cochilo' -and $c.fase -eq 'laco') { $k = CN-CochiloKf $k $t $c.t0 }
     elseif ($c.id -eq 'pescaria' -and $c.fase -eq 'laco') { $k = CN-PescaKf $k $t $c.t0 }
+    elseif ($c.id -eq 'costura' -and $c.fase -eq 'laco') { $k = CN-CosturaKf $k $al }
     $script:cq = @{ id = $c.id; fase = $c.fase; a = $al; tc = $t - $c.t0; k = $k; fixo = $false }
     return
   }
@@ -427,6 +442,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'cochilo' { CN-Cochilo $cq $camada $t }
     'pescaria' { CN-Pescaria $cq $camada $t }
     'terminal' { if ($camada -eq 'atras') { CN-Terminal $cq $t } }
+    'costura' { if ($camada -eq 'frente') { CN-Costura $cq } }
   }
 }
 
@@ -788,4 +804,63 @@ function CN-Terminal($cq, [double]$t) {
     U $CN_FAISCA (-12.9) (-7.5) 0.8 1.1                             # "$" novo
     if ($pisca) { U $CN_PAPEL (-11.7) (-7.2) 0.7 0.7 }
   } elseif ($pisca) { U $CN_PAPEL (-12.9) (-7.2) 0.7 0.7 }
+}
+
+# ---------- costura (Codando com Edit) ----------
+# Faixa de 4 pedacos a direita, abaixo da mao (x 4,5..13,5, y -4,5..-2,9; cantos a <= 14,6 do centro). A cada volta (3,2 s) um pedaco
+# do meio (alterna entre o 2o e o 3o) sobe e some, um verde desce no lugar e a agulha costura as duas emendas.
+# Tempos da volta: 0,3-0,8 tira; 0,8-1,3 poe; 1,3-2,6 costura (emenda esquerda, depois direita); 2,6-3,2 contente.
+function CN-CsAgulha([double]$a) {
+  # $null fora da costura; senao @(x da emenda, y do topo da agulha)
+  if ($a -lt 1.3 -or $a -ge 2.6) { return $null }
+  $e = $(if ($a -lt 1.95) { 0 } else { 1 })
+  @((6.75 + 2.25 * $e), (-7.6 + 2.4 * [math]::Abs([math]::Sin(($a - 1.3) * [math]::PI * 3))))
+}
+
+function CN-CosturaKf($k, [double]$a) {
+  $kk = $k.Clone()
+  if ($a -ge 0.3 -and $a -lt 0.8) { $kk.armR = -2.0 }                       # puxa o pedaco velho
+  $ag = CN-CsAgulha $a
+  if ($null -ne $ag -and $ag[1] -lt -6.5) { $kk.armR = -1.0 }               # mao sobe com a agulha
+  if ($a -ge 2.6) { $kk.eyes = 'happy' }
+  $kk
+}
+
+function CN-Costura($cq) {
+  $esc = 1.0
+  if ($cq.fase -eq 'entra') { $esc = [math]::Min(1.0, $cq.a / 0.4) }
+  elseif ($cq.fase -eq 'sai') { $esc = [math]::Max(0.0, 1.0 - $cq.a / 0.4) }
+  if ($esc -le 0.05) { return }
+  $laco = ($cq.fase -eq 'laco')
+  $a = $(if ($laco) { $cq.a } else { 0.0 })
+  $volta = [int][math]::Floor([math]::Max(0.0, $cq.tc - 0.4) / 3.2)
+  $r = 1 + ($volta % 2)                                                     # pedaco trocado nesta volta
+  $y0 = -4.5
+  for ($i = 0; $i -lt 4; $i++) {
+    $x = 4.5 + 2.25 * $i
+    if ($x + 2.25 * $esc -gt 13.51) { break }
+    $novo = ($i -ne 0 -and $volta -ge 1)                                    # ja foi trocado numa volta anterior
+    $dy = 0.0; $velho = $false
+    if ($laco -and $i -eq $r) {
+      if ($a -lt 0.8) { $velho = $true; $dy = -6.5 * [math]::Max(0.0, $a - 0.3) / 0.5; if ($a -ge 0.75) { continue } }
+      else { $novo = $true; $dy = -6.0 * [math]::Max(0.0, 1.3 - $a) / 0.5 }
+    }
+    U $(if ($novo) { $CN_QFACE } else { $CN_PAPEL }) $x ($y0 + $dy) 2.0 1.6
+    U $(if ($velho) { $CN_BUG } else { $CN_TINTA }) ($x + 0.3) ($y0 + 0.5 + $dy) 1.5 0.6   # "linha de codigo"
+  }
+  if (-not $laco) { return }
+  # pontos ja dados nas emendas do pedaco novo
+  for ($e = 0; $e -lt 2; $e++) {
+    $fim = 1.95 + 0.65 * $e
+    if ($a -ge $fim - 0.65) {
+      $hh = 2.6 * [math]::Min(1.0, ($a - ($fim - 0.65)) / 0.65)
+      U $CN_PINCEL (6.5 + 2.25 * ($r - 1) + 2.25 * $e) (-4.8) 0.5 $hh
+    }
+  }
+  # agulha e linha: da mao (x 8) ate o olho da agulha; fora da costura a agulha fica na mao
+  $ag = CN-CsAgulha $a
+  if ($null -eq $ag) { U $CN_AGULHA 8.3 (-12.6) 0.5 2.4; return }
+  $sx = $ag[0] + 2.25 * ($r - 1); $sy = $ag[1]
+  CN-Linha 8.0 (-10.0) $sx $sy $CN_PINCEL 0.6
+  U $CN_AGULHA ($sx - 0.25) $sy 0.5 2.4
 }
