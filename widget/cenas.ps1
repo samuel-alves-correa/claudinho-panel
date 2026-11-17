@@ -125,12 +125,15 @@ $script:CENAS = @{
   # carregam caixas pelo chao; quando um subagente termina, o mini dele acena e some numa fumacinha e a prancheta ganha um check;
   # quando todos terminam ele pula (quadro dinamico em CN-ChefeKf)
   'chefe' = @{ prio = 1.5
-    entra = (CN-Seq @( @{ ate = 0.4; eyY = -13.0 } ))
-    laco = (CN-Seq @( @{ ate = 8.0; eyY = -13.0 } ))
+    entra = (CN-Seq @(
+      @{ ate = 0.2; ox = -2.5; wf = 8.0 }
+      @{ ate = 0.4; ox = -5.0; eyY = -13.0 }
+    ))
+    laco = (CN-Seq @( @{ ate = 8.0; ox = -5.0; eyY = -13.0 } ))
     sai = (CN-Seq @(
-      @{ ate = 0.3; eyes = 'happy' }
-      @{ ate = 0.55; oy = -3.0; armL = -2.0; armR = -2.0; eyes = 'happy' }
-      @{ ate = 0.8 }
+      @{ ate = 0.3; ox = -5.0; eyes = 'happy' }
+      @{ ate = 0.55; ox = -5.0; oy = -3.0; armL = -2.0; armR = -2.0; eyes = 'happy' }
+      @{ ate = 0.8; ox = -2.5; wf = 8.0 }
     )) }
   # 2) pescaria: sentado na ponta do pier, segura uma vara com uma linha por subagente (max 3) descendo para a agua;
   # as boias balancam e de vez em quando afundam; quando um subagente termina ele puxa a linha e sai um peixinho rosa,
@@ -487,29 +490,31 @@ function CN-Aguardando($cq, [string]$camada, [double]$t) {
 }
 
 # ---------- chefe de obra ----------
-# posicao do mini-Claudinho i (de n) no tempo tc: vai e volta no chao entre -13 e 13, carregando caixa na ida
+# posicao do mini-Claudinho i (de n) no tempo tc: vai e volta no chao entre -4 e 10 (a frente do chefe, que fica a
+# esquerda), carregando caixa na ida
+$CN_MINI_A = -4.0; $CN_MINI_B = 10.0; $CN_MINI_E = 1.5   # trajeto e escala do mini (1 = 4 x 3,4 pixels do bichinho)
 function CN-MiniX([int]$i, [int]$n, [double]$tc) {
-  $per = 8.0; $u = ($tc + $i * $per / [math]::Max(1, $n)) % $per
-  if ($u -lt 4.0) { return @((-13.0 + 26.0 * $u / 4.0), 1) }
-  @((13.0 - 26.0 * ($u - 4.0) / 4.0), -1)
+  $per = 8.0; $u = ($tc + $i * $per / [math]::Max(1, $n)) % $per; $span = $CN_MINI_B - $CN_MINI_A
+  if ($u -lt 4.0) { return @(($CN_MINI_A + $span * $u / 4.0), 1) }
+  @(($CN_MINI_B - $span * ($u - 4.0) / 4.0), -1)
 }
 
-# mini-Claudinho de 4 x 3,4 no chao; dir: 1 direita / -1 esquerda
+# mini-Claudinho rosa (cor dos subagentes) em pe no chao; dir: 1 direita / -1 esquerda
 function CN-Mini([double]$x, [int]$dir, [bool]$caixa, [int]$passo, [double]$aceno) {
-  $mb = '#d97757'; if ($B) { $mb = $B }          # $B e $ink vem do Draw-Mascot (escopo dinamico)
-  $mi = '#1c1410'; if ($ink) { $mi = $ink }
-  U $mb ($x - 2) (-3.4) 4 2.2
-  U $mb ($x - 1.5) (-1.2) 0.8 (1.2 - 0.5 * $passo); U $mb ($x + 0.7) (-1.2) 0.8 (0.7 + 0.5 * $passo)
-  $ex = $x - 1.1 + 0.4 * $dir
-  U $mi $ex (-2.8) 0.6 0.6; U $mi ($ex + 1.6) (-2.8) 0.6 0.6
+  $e = $CN_MINI_E; $mb = $SUBC; $mi = '#1c1410'
+  U $mb ($x - 2 * $e) (-3.4 * $e) (4 * $e) (2.2 * $e)
+  U $mb ($x - 1.5 * $e) (-1.2 * $e) (0.8 * $e) ((1.2 - 0.5 * $passo) * $e)
+  U $mb ($x + 0.7 * $e) (-1.2 * $e) (0.8 * $e) ((0.7 + 0.5 * $passo) * $e)
+  $ex = $x + (-1.1 + 0.4 * $dir) * $e
+  U $mi $ex (-2.8 * $e) (0.6 * $e) (0.6 * $e); U $mi ($ex + 1.6 * $e) (-2.8 * $e) (0.6 * $e) (0.6 * $e)
   if ($caixa) {
-    U $mb ($x - 2.6) (-4.4) 0.6 1.6; U $mb ($x + 2) (-4.4) 0.6 1.6        # bracos para cima
-    U $CN_CAIXA ($x - 1.6) (-5.6) 3.2 1.8; U $CN_CAIXAD ($x - 1.6) (-4.8) 3.2 0.4
+    U $mb ($x - 2.6 * $e) (-4.4 * $e) (0.6 * $e) (1.6 * $e); U $mb ($x + 2 * $e) (-4.4 * $e) (0.6 * $e) (1.6 * $e)   # bracos para cima
+    U $CN_CAIXA ($x - 1.6 * $e) (-5.6 * $e) (3.2 * $e) (1.8 * $e); U $CN_CAIXAD ($x - 1.6 * $e) (-4.8 * $e) (3.2 * $e) (0.4 * $e)
   } elseif ($aceno -ge 0) {
-    U $mb ($x - 2.6) (-2.8) 0.6 1
-    U $mb ($x + 2) (-5.0 + 0.6 * $aceno) 0.6 1.8                            # tchau
+    U $mb ($x - 2.6 * $e) (-2.8 * $e) (0.6 * $e) (1 * $e)
+    U $mb ($x + 2 * $e) ((-5.0 + 0.6 * $aceno) * $e) (0.6 * $e) (1.8 * $e)          # tchau
   } else {
-    U $mb ($x - 2.6) (-2.8) 0.6 1; U $mb ($x + 2) (-2.8) 0.6 1
+    U $mb ($x - 2.6 * $e) (-2.8 * $e) (0.6 * $e) (1 * $e); U $mb ($x + 2 * $e) (-2.8 * $e) (0.6 * $e) (1 * $e)
   }
 }
 
@@ -518,7 +523,7 @@ function CN-ChefeKf($k, [double]$t, [double]$tc) {
   $kk = $k.Clone()
   $n = [math]::Max(1, [math]::Min(3, $script:cnAgN))
   $m = CN-MiniX 0 $n $tc
-  $kk.eyX = [math]::Max(-1.0, [math]::Min(1.0, $m[0] / 9.0))
+  $kk.eyX = [math]::Max(-1.0, [math]::Min(1.0, ($m[0] - 3.0) / 7.0))   # o chefe fica em x = -5; os minis andam de -4 a 10
   $ciclo = $tc % 6.0
   if ($ciclo -ge 4.2 -and $ciclo -lt 5.2) { $kk.eyX = 1.0; $kk.eyY = -12.5; $kk.tilt = $true }   # confere a prancheta
   if (($t - $script:cnSaiu) -lt 0.9) { $kk.eyes = 'happy'; $kk.eyY = -14.0 }
@@ -532,7 +537,7 @@ function CN-Chefe($cq, [string]$camada, [double]$t) {
     $n = $(if ($cq.fase -eq 'sai') { 0 } else { [math]::Max(1, [math]::Min(3, $script:cnAgN)) })
     $passo = $(if ($cq.fixo) { 0 } else { ([int][math]::Floor($t * 8)) % 2 })
     for ($i = 0; $i -lt $n; $i++) {
-      if ($cq.fixo) { $x = -10.0 + $i * 10.0; $d = 1 } else { $m = CN-MiniX $i $n $tc; $x = $m[0]; $d = $m[1] }
+      if ($cq.fixo) { $x = $CN_MINI_A + 1.0 + $i * 6.0; $d = 1 } else { $m = CN-MiniX $i $n $tc; $x = $m[0]; $d = $m[1] }
       CN-Mini $x $d ($d -gt 0) $passo -1
     }
     # quem acabou de terminar: para onde estava, acena e some numa fumacinha
@@ -549,7 +554,7 @@ function CN-Chefe($cq, [string]$camada, [double]$t) {
     if ($cq.fase -ne 'sai' -or $cq.a -lt 0.3) {
       $esc = $(if ($cq.fase -eq 'entra') { [math]::Min(1.0, $cq.a / 0.3) } else { 1.0 })
       if ($esc -lt 0.2) { return }
-      $px = 9.5; $py = -13.0
+      $px = 4.5; $py = -13.0   # mao direita do chefe (corpo em x = -5)
       U $CN_PRANCHA $px $py 3.5 (5 * $esc)
       U $CN_PAPEL ($px + 0.5) ($py + 0.8) 2.5 (3.8 * $esc)
       U $CN_QPE ($px + 1.1) ($py - 0.5) 1.3 0.8
