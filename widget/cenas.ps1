@@ -36,6 +36,10 @@ $CN_VARA = '#8b6a4a'; $CN_LINHA = '#c8c6bf'; $CN_LINHAD = '#6b6b66'; $CN_AGUA = 
 # depois de $CN_AG_SONO s com subagentes rodando ele cansa e vai para o cochilo
 $CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
+# cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
+# (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
+$CN_EST_ESPERA = @{ terminal = 0.6 }
+$CN_TELA = '#0d1117'   # fundo do terminal (a moldura cinza separa do preto do anel)
 
 # ---------- estado ----------
 $script:cena = $null        # @{ id; prio; fase = 'entra'|'laco'|'sai'; tf = inicio da fase; t0 = inicio da cena; voltas; fixo; fam }
@@ -53,6 +57,8 @@ $script:cnAgVez = -1         # indice em $CN_AG_INICIO da cena de abertura atual
 $script:cnAgIni = 'chefe'    # cena de abertura do estado Agentes desta vez
 $script:cnFam = ''          # familia de modo vista no quadro anterior
 $script:cnModo = ''         # modo visto no quadro anterior
+$script:cnEstQuer = ''      # cena do estado pedida agora ('' = nenhuma)
+$script:cnEstDesde = 0.0    # desde quando ela e pedida
 $script:cnRnd = New-Object System.Random
 # arrasto (preenchido pelos eventos de mouse do widget)
 $script:arrY = 0.0; $script:arrT = 0.0; $script:arrVel = 0.0
@@ -163,6 +169,23 @@ $script:CENAS = @{
       @{ ate = 0.4; oy = -4.0; armL = -3.0; armR = -3.0; eyY = -15.0 }
       @{ ate = 1.0 }
     )) }
+  # ---- cenas do estado (estado = $true): prio 0.5, qualquer outra cena passa por cima; semRm = nao toca com reducao de movimento
+  # Codando com Bash: terminal a esquerda, ele digita e le as linhas verdes que sobem; na saida aparece um "$" novo
+  'terminal' = @{ prio = 0.5; estado = $true; semRm = $true
+    entra = (CN-Seq @(
+      @{ ate = 0.2; ox = 1.5; wf = 8.0 }
+      @{ ate = 0.4; ox = 3.0; eyX = -1.0; eyY = -13.0 }
+    ))
+    laco = (CN-Seq @(
+      @{ ate = 0.15; ox = 3.0; eyX = -1.0; eyY = -13.0; armL = -1.0 }
+      @{ ate = 0.3; ox = 3.0; eyX = -1.0; eyY = -13.0 }
+      @{ ate = 0.45; ox = 3.0; eyX = -1.0; eyY = -13.0; armL = -1.0 }
+      @{ ate = 1.4; ox = 3.0; eyX = -1.0; eyY = -12.5 }
+    ))
+    sai = (CN-Seq @(
+      @{ ate = 0.5; ox = 3.0; eyX = -1.0; eyes = 'happy' }
+      @{ ate = 0.8; ox = 1.5; wf = 8.0 }
+    )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -176,6 +199,13 @@ $script:CENAS = @{
 
 # ---------- motor ----------
 function CN-EhAg([string]$id) { $id -eq 'aguardando' -or $id -eq 'chefe' -or $id -eq 'pescaria' -or $id -eq 'cochilo' }
+function CN-EhEst([string]$id) { $d = $script:CENAS[$id]; [bool]($d -and $d.estado) }
+# cena do estado que o modo atual pede ('' = nenhuma)
+function CN-Estado($v, [string]$mode, [string]$fam) {
+  $tool = [string]$v.tool
+  if ($mode -eq 'coding' -and $tool -eq 'Bash') { return 'terminal' }
+  ''
+}
 function CN-Fam([string]$mode, [bool]$loud) {
   if ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'agents') { return 'ocupado' }
   if ($mode -eq 'waiting' -and $loud) { return 'alerta' }
@@ -192,6 +222,7 @@ function Cena-Tocar([string]$id, [double]$t, [switch]$Forcar, [switch]$Laco, [in
   $c = $script:cena
   if ($c -and -not $Forcar -and $c.prio -ge $def.prio) { return }
   $fixo = [bool]$script:rm
+  if ($fixo -and $def.semRm) { return }   # cena do estado que so enfeita: com reducao de movimento fica a animacao do estado
   # reducao de movimento: so a cena que informa algo (quadro em laco = pergunta pendente) aparece, e parada
   if ($fixo -and -not ($Laco -and $def.laco)) { $script:cena = $null; return }
   $fase = $(if ($def.entra -and -not $fixo) { 'entra' } elseif ($def.laco) { 'laco' } else { 'sai' })
@@ -246,6 +277,7 @@ function Cena-Gatilhos($v, [double]$t) {
     if (-not $c) {
       if ($script:CN_DEBUG -eq 'quadro') { Cena-Tocar 'quadro' $t -Voltas 4 }
       elseif (CN-EhAg $script:CN_DEBUG) { if ($script:cnAgN -lt 1) { $script:cnAgN = 3 }; Cena-Tocar $script:CN_DEBUG $t -Laco }
+      elseif (CN-EhEst $script:CN_DEBUG) { Cena-Tocar $script:CN_DEBUG $t -Voltas 3 }   # entra, 3 lacos e sai
       else { Cena-Tocar $script:CN_DEBUG $t }
     }
     return
@@ -290,9 +322,18 @@ function Cena-Gatilhos($v, [double]$t) {
   if ($c -and (CN-EhAg $c.id) -and $c.fase -ne 'sai' -and -not $querAg) { Cena-Parar $t; return }
   if ($querAg) {
     $sono = (($t - $script:cnAgDesde) -ge $CN_AG_SONO)
-    if (-not $c) { Cena-Tocar $(if ($sono) { 'cochilo' } else { $script:cnAgIni }) $t -Laco }
+    if (-not $c -or (CN-EhEst $c.id)) { Cena-Tocar $(if ($sono) { 'cochilo' } else { $script:cnAgIni }) $t -Laco }
     elseif (($c.id -eq 'chefe' -or $c.id -eq 'pescaria') -and $sono -and $c.fase -eq 'laco' -and ($t - $script:cnSaiu) -gt 1.0) { Cena-Fim $t; Cena-Tocar 'cochilo' $t -Laco }
     $script:cnProxOcioso = 0.0; return   # o rodizio do ocioso nao toca enquanto houver subagentes
+  }
+
+  # 5c) cena do estado: em laco enquanto o modo (e a ferramenta) pedirem; troca = a atual sai e a nova espera o estado assentar
+  $est = CN-Estado $v $mode $fam
+  if ($est -ne $script:cnEstQuer) { $script:cnEstQuer = $est; $script:cnEstDesde = $t }
+  if ($c -and (CN-EhEst $c.id) -and $c.id -ne $est) { if ($c.fase -ne 'sai') { Cena-Parar $t }; return }
+  if ($est) {
+    if (-not $c -and ($t - $script:cnEstDesde) -ge $CN_EST_ESPERA[$est]) { Cena-Tocar $est $t -Laco }
+    return
   }
 
   # 6) rodizio no ocioso / sua vez (como a tela vazia do app, mas espacado)
@@ -385,6 +426,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'chefe' { CN-Chefe $cq $camada $t }
     'cochilo' { CN-Cochilo $cq $camada $t }
     'pescaria' { CN-Pescaria $cq $camada $t }
+    'terminal' { if ($camada -eq 'atras') { CN-Terminal $cq $t } }
   }
 }
 
@@ -717,4 +759,33 @@ function CN-Pescaria($cq, [string]$camada, [double]$t) {
     U $CN_LINHAD ($lx - 0.2) ($script:PQ_AGUA + 0.6) 0.4 4.5          # linha seguindo para o fundo (sai do quadro)
     U $CN_BOIA ($lx - 0.5) ($by - 0.6) 1 0.6; U $CN_PAPEL ($lx - 0.5) $by 1 0.5
   }
+}
+
+# ---------- terminal (Codando com Bash) ----------
+# Monitor de moldura cinza a esquerda (x -14..-6, y -13..-5; cantos a <= 14,9 do centro): enquanto o comando roda sobem
+# linhas verdes de saida e o cursor pisca embaixo; na saida (comando acabou) as linhas param e aparece um "$" novo.
+function CN-Terminal($cq, [double]$t) {
+  $esc = 1.0
+  if ($cq.fase -eq 'entra') { $esc = [math]::Min(1.0, $cq.a / 0.4) }
+  elseif ($cq.fase -eq 'sai') { $esc = [math]::Max(0.0, 1.0 - [math]::Max(0.0, $cq.a - 0.5) / 0.3) }
+  if ($esc -le 0.05) { return }
+  U $CN_QPE (-10.8) (-5) 1.6 5; U $CN_QPE (-12.5) (-0.8) 5 0.8   # pe e base
+  $hy = 8.0 * $esc
+  U $CN_QBORDA (-14) (-5 - $hy) 8 $hy                              # moldura cresce de baixo para cima
+  if ($esc -lt 1) { return }
+  U $CN_TELA (-13.3) (-12.3) 6.6 6.6
+  $sai = ($cq.fase -eq 'sai')
+  # quantas linhas ja sairam (2,5 por segundo); na saida congela no instante em que o comando acabou
+  $tl = $(if ($sai) { $cq.tc - $cq.a } else { $cq.tc })
+  $n = [int][math]::Floor([math]::Max(0.0, $tl - 0.4) * 2.5)
+  # fileira 0 = a de baixo (cursor ou "$"); fileiras 1..3 = as ultimas linhas, a mais nova embaixo
+  for ($j = 1; $j -le 3; $j++) {
+    $k = $n - $j; if ($k -lt 0) { break }
+    U $CN_OK (-12.9) (-7.2 - 1.4 * $j) (1.6 + (($k * 7) % 5) * 0.9) 0.7
+  }
+  $pisca = (([int][math]::Floor($t * 3)) % 2 -eq 0)
+  if ($sai) {
+    U $CN_FAISCA (-12.9) (-7.5) 0.8 1.1                             # "$" novo
+    if ($pisca) { U $CN_PAPEL (-11.7) (-7.2) 0.7 0.7 }
+  } elseif ($pisca) { U $CN_PAPEL (-12.9) (-7.2) 0.7 0.7 }
 }
