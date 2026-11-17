@@ -20,7 +20,7 @@ claudinho-panel/
 ├─ types/index.d.ts             contrato do estado ($.state) do mod
 └─ widget/
    ├─ claudinho-widget.ps1      widget "sempre no topo" (PowerShell + WinForms/GDI+)
-   ├─ cenas.ps1                 vinhetas (inseto, quadro, plugue, pendurado) por cima das animações; ver docs/cenas.md
+   ├─ cenas.ps1                 vinhetas (inseto, quadro, plugue, pendurado, cenas por estado) por cima das animações; ver docs/cenas.md
    └─ iniciar-widget.cmd        abre o widget sem janela de console
 (em %USERPROFILE%\.claude\claudinho\state\<sessionId>.json: estado de cada sessão, gerado fora do repositório)
 ```
@@ -111,18 +111,18 @@ Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fix
 
 | Estado | Mascote |
 |---|---|
-| 😴 Ocioso | parado, respirando, olhos fechados |
-| 🧠 Pensando | passeia devagar olhando para cima, arco girando no anel |
-| 💻 Codando | vira, agacha na frente do notebook (tela piscando) e trota no lugar, arco girando no anel |
-| 🔍 Lendo | passeia devagar, arco girando no anel |
+| 😴 Ocioso | parado, respirando, olhos fechados (de vez em quando uma cena do rodízio, como a `borboleta`) |
+| 🧠 Pensando | passeia devagar olhando para cima, arco girando no anel; depois de 1,5 s, cena `lampada` (lâmpada fraca piscando sobre a cabeça, que acende forte quando ele sai do Pensando) |
+| 💻 Codando | vira, agacha na frente do notebook (tela piscando) e trota no lugar, arco girando no anel; com `Bash`, cena `terminal` (linhas verdes subindo e um `$` novo ao terminar); com `Edit`, cena `costura` (troca um pedaço da faixa de código e costura com agulha e linha) |
+| 🔍 Lendo | passeia devagar, arco girando no anel; com `Read`/`Glob`/`LS`, cena `lupa` (anda com a lupa seguindo pegadas no chão) |
 | 💬 Sua vez | acena por ~3 s e fica parado, sem alerta (cor neutra); o widget passa a redesenhar ~4x/s |
 | 🤖 Agentes | subagente rodando com a conversa principal em Sua vez ou Ocioso (o ✅ Terminou ainda aparece por 4 s antes): cena `chefe` (prancheta e mini-Claudinhos carregando caixas) ou `pescaria` (uma linha por subagente; cada um que termina vira um peixe), alternando, e depois de 25 s, `cochilo` (cochila com um olho aberto e acorda num pulo quando um subagente termina) |
-| 🟡 Aguardando você | pula com os braços para cima e o anel âmbar pulsa (~3 ciclos, depois fixo) |
-| ✅ Terminou | pulinho, anel verde (o verde fica até você passar o mouse) |
-| ❌ Erro | treme com olhos em X, anel vermelho (só quando o turno termina com erro) |
+| 🟡 Aguardando você | pula com os braços para cima e o anel âmbar pulsa (~3 ciclos, depois fixo); na permissão, cena `placa` (levanta uma placa "OK?" e balança); em pergunta/plano, cena `quadro` |
+| ✅ Terminou | pulinho, anel verde (o verde fica até você passar o mouse); cena `plugue` ou `bandeira` (finca uma bandeirinha verde), alternando |
+| ❌ Erro | treme com olhos em X, anel vermelho (só quando o turno termina com erro); depois, cena `fumaca` (o notebook solta fumaça e ele abana) |
 | Fechado | parado, olhos fechados, sem animação (nenhuma sessão viva) |
 
-**Cenas** (`widget/cenas.ps1`, detalhes em `docs/cenas.md`): subagente ativo → chefe de obra ou pescaria (um mini-Claudinho ou uma linha por subagente) e, depois de 25 s, cochilo vigiado; ferramenta falhou → uma joaninha entra e leva um tapa; pergunta ou plano esperando você → quadro com "?" ao lado; turno terminou → plugue encaixa; arrastar o widget → fica pendurado e quica ao soltar; parado em Ocioso/Sua vez → uma delas a cada 40–80 s. `CW_CENAS=0` desliga; `CW_CENA=<nome>` repete uma em laço.
+**Cenas** (`widget/cenas.ps1`, detalhes em `docs/cenas.md`): subagente ativo → chefe de obra ou pescaria (um mini-Claudinho ou uma linha por subagente) e, depois de 25 s, cochilo vigiado; ferramenta falhou → uma joaninha entra e leva um tapa; pergunta ou plano esperando você → quadro com "?" ao lado; turno terminou → plugue encaixa ou bandeira fincada (alternando); arrastar o widget → fica pendurado e quica ao soltar; parado em Ocioso/Sua vez → uma de plugue, inseto, quadro ou borboleta a cada 40–80 s. Cenas do estado (em laço enquanto o estado durar; qualquer outra cena passa por cima): terminal (Bash), costura (Edit), lâmpada (Pensando), lupa (Read/Glob/LS), fumaça (Erro), placa (permissão). `CW_CENAS=0` desliga; `CW_CENA=<nome>` repete uma em laço.
 
 Campos do JSON por estado: `name` (nome completo, título do balão), `short` (nome curto sob o mascote, cabe em ~64 px) e `labelShort` (label curto: alvo da ferramenta, como `claudinho-state.json`, ou o próprio label).
 
