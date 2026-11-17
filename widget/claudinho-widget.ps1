@@ -440,9 +440,12 @@ function Draw-Mascot($g, [single]$cx, [single]$gy, [single]$p, $v, [double]$t, [
     }
   }
   # olhos
+  $ei = 0
   foreach ($e2 in $eyeList) {
     $ex = $e2[0]; $ey = $e2[1]; $ew = $e2[2]; $eh = $e2[3]
     $ec = $eyes
+    if ($eyes -eq 'vigia') { $ec = $(if ($ei -eq 0) { 'closed' } else { 'open' }) }   # um fechado, um aberto (cena cochilo)
+    $ei++
     if ($eh -lt 1) { $ec = 'dash' }
     switch ($ec) {
       'open' { U $ink $ex $ey $ew $eh }

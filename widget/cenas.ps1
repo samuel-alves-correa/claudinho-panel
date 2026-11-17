@@ -13,7 +13,7 @@
 # Coordenadas: "pixels do bichinho" (a funcao U), x = 0 no centro do anel, y = 0 no chao, negativo = para cima.
 # O corpo de frente ocupa x -8..8 e y -16..0; o anel tem raio ~17 nessas unidades, com o centro em y = -8.
 #
-# Depuracao: CW_CENAS=0 desliga todas as cenas; CW_CENA=inseto|quadro|plugue|aguardando repete essa cena em laco (bom para gravar GIF).
+# Depuracao: CW_CENAS=0 desliga todas as cenas; CW_CENA=inseto|quadro|plugue|aguardando|chefe|cochilo repete essa cena em laco (bom para gravar GIF).
 
 # ---------- configuracao ----------
 $script:CN_ON = ($env:CW_CENAS -ne '0')
@@ -28,6 +28,11 @@ $CN_BUG = '#e5484d'; $CN_BUGD = '#7a1f22'; $CN_PATA = '#8a8a8a'
 $CN_QFACE = '#bfe9d9'; $CN_QBORDA = '#9aa0a8'; $CN_QPE = '#6b7078'; $CN_TINTA = '#1b1b1b'; $CN_PINCEL = '#8b7cf6'
 $CN_PLUG = '#9aa0a8'; $CN_PLUGD = '#6b7078'; $CN_FAISCA = '#f5c542'
 $CN_AREIA = '#e8c97a'; $CN_VIDRO = '#9aa0a8'   # ampulheta da cena aguardando (as bolinhas usam $SUBC do widget)
+$CN_CAIXA = '#c8a26a'; $CN_CAIXAD = '#9a7746'   # caixas dos mini-Claudinhos (chefe)
+$CN_PRANCHA = '#a0714f'; $CN_PAPEL = '#faf9f5'; $CN_OK = '#5fd38d'; $CN_FUMACA = '#a09d96'
+$CN_Z = '#a09d96'; $CN_ZD = '#6b6b66'; $CN_ALERTA = '#f5c542'
+# estado Agentes: comeca no chefe de obra; depois de $CN_AG_SONO s com subagentes rodando ele cansa e vai para o cochilo
+$CN_AG_SONO = 25.0
 
 # ---------- estado ----------
 $script:cena = $null        # @{ id; prio; fase = 'entra'|'laco'|'sai'; tf = inicio da fase; t0 = inicio da cena; voltas; fixo; fam }
@@ -36,6 +41,11 @@ $script:cnFalhaVista = -1.0 # failAt ja tratado (-1 = ainda nao leu: o 1o valor 
 $script:cnProxOcioso = 0.0  # quando tocar a proxima cena do rodizio
 $script:cnUltima = ''       # ultima cena do rodizio (nao repete seguida)
 $script:cnAgN = 0            # bolinhas da cena aguardando (1..3): ultimo agentsN > 0 visto (a saida ainda precisa dele)
+$script:cnAgPrev = 0         # agentsN do quadro anterior (para perceber um subagente terminando)
+$script:cnAgDesde = 0.0      # quando os subagentes comecaram (decide chefe -> cochilo)
+$script:cnSaiu = -99.0       # quando um subagente terminou por ultimo ($t)
+$script:cnSaiuIdx = 0; $script:cnSaiuN = 1   # qual mini-Claudinho saiu e quantos havia (para achar onde ele estava)
+$script:cnFeitos = 0         # subagentes terminados desde que comecaram (checks na prancheta, max 3)
 $script:cnFam = ''          # familia de modo vista no quadro anterior
 $script:cnModo = ''         # modo visto no quadro anterior
 $script:cnRnd = New-Object System.Random
@@ -106,6 +116,30 @@ $script:CENAS = @{
       @{ ate = 0.35; oy = -3.0; armL = -2.0; armR = -2.0 }
       @{ ate = 0.5 }
     )) }
+  # 1) chefe de obra: de prancheta na mao, acompanha com os olhos os mini-Claudinhos (um por subagente, max 3) que
+  # carregam caixas pelo chao; quando um subagente termina, o mini dele acena e some numa fumacinha e a prancheta ganha um check;
+  # quando todos terminam ele pula (quadro dinamico em CN-ChefeKf)
+  'chefe' = @{ prio = 1.5
+    entra = (CN-Seq @( @{ ate = 0.4; eyY = -13.0 } ))
+    laco = (CN-Seq @( @{ ate = 8.0; eyY = -13.0 } ))
+    sai = (CN-Seq @(
+      @{ ate = 0.3; eyes = 'happy' }
+      @{ ate = 0.55; oy = -3.0; armL = -2.0; armR = -2.0; eyes = 'happy' }
+      @{ ate = 0.8 }
+    )) }
+  # 7) cochilo vigiado: sentado, cochila com "z" subindo mas com um olho aberto seguindo as bolinhas; quando um subagente
+  # termina acorda num pulo com um "!" e volta a cochilar (quadro dinamico em CN-CochiloKf)
+  'cochilo' = @{ prio = 1.5
+    entra = (CN-Seq @(
+      @{ ate = 0.3; lift = -1.0; eyes = 'squint' }
+      @{ ate = 0.8; lift = -2.0; eyes = 'closed' }
+    ))
+    laco = (CN-Seq @( @{ ate = 8.0; lift = -2.0; eyes = 'vigia' } ))
+    sai = (CN-Seq @(
+      @{ ate = 0.12; lift = -2.5 }
+      @{ ate = 0.4; oy = -4.0; armL = -3.0; armR = -3.0; eyY = -15.0 }
+      @{ ate = 1.0 }
+    )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -118,6 +152,7 @@ $script:CENAS = @{
 }
 
 # ---------- motor ----------
+function CN-EhAg([string]$id) { $id -eq 'aguardando' -or $id -eq 'chefe' -or $id -eq 'cochilo' }
 function CN-Fam([string]$mode, [bool]$loud) {
   if ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'agents') { return 'ocupado' }
   if ($mode -eq 'waiting' -and $loud) { return 'alerta' }
@@ -171,6 +206,12 @@ function Cena-Gatilhos($v, [double]$t) {
   $nAg = 0; try { $nAg = [int]$v.agentsN } catch { }
   $querAg = ($nAg -gt 0 -and $fam -ne 'alerta' -and $fam -ne 'erro')
   if ($nAg -gt 0) { $script:cnAgN = [math]::Min(3, $nAg) }
+  if ($nAg -gt 0 -and $script:cnAgPrev -le 0) { $script:cnAgDesde = $t; $script:cnFeitos = 0 }
+  if ($nAg -lt $script:cnAgPrev) {   # um (ou mais) subagente terminou
+    $script:cnSaiu = $t; $script:cnSaiuIdx = $nAg; $script:cnSaiuN = [math]::Min(3, $script:cnAgPrev)
+    $script:cnFeitos = [math]::Min(3, $script:cnFeitos + ($script:cnAgPrev - $nAg))
+  }
+  $script:cnAgPrev = $nAg
 
   if ($fam -eq 'off') { if ($c) { Cena-Fim $t }; return }
 
@@ -178,7 +219,7 @@ function Cena-Gatilhos($v, [double]$t) {
   if ($script:CN_DEBUG -and $script:CENAS[$script:CN_DEBUG]) {
     if (-not $c) {
       if ($script:CN_DEBUG -eq 'quadro') { Cena-Tocar 'quadro' $t -Voltas 4 }
-      elseif ($script:CN_DEBUG -eq 'aguardando') { if ($script:cnAgN -lt 1) { $script:cnAgN = 3 }; Cena-Tocar 'aguardando' $t -Laco }
+      elseif (CN-EhAg $script:CN_DEBUG) { if ($script:cnAgN -lt 1) { $script:cnAgN = 3 }; Cena-Tocar $script:CN_DEBUG $t -Laco }
       else { Cena-Tocar $script:CN_DEBUG $t }
     }
     return
@@ -202,9 +243,9 @@ function Cena-Gatilhos($v, [double]$t) {
 
   # 3) a familia de modo mudou (ex.: chegou um alerta, deu erro, voce mandou um prompt): a cena em curso sai
   #    (a aguardando sobrevive a ocupado <-> calmo enquanto houver subagentes)
-  if ($c -and $mudouFam -and $c.id -ne 'aterrissa' -and -not ($c.id -eq 'aguardando' -and $querAg)) {
-    # o quadro sai girando; a aguardando pula (bolinhas voam para ele) quando o subagente acaba e ele fica parado; o resto some
-    if ($c.id -eq 'quadro' -or ($c.id -eq 'aguardando' -and $fam -eq 'calmo')) { Cena-Parar $t } else { Cena-Fim $t; $c = $null }
+  if ($c -and $mudouFam -and $c.id -ne 'aterrissa' -and -not ((CN-EhAg $c.id) -and $querAg)) {
+    # o quadro sai girando; as cenas de subagente tocam a saida (pulo) quando eles acabam e ele fica parado; o resto some
+    if ($c.id -eq 'quadro' -or ((CN-EhAg $c.id) -and $fam -eq 'calmo')) { Cena-Parar $t } else { Cena-Fim $t; $c = $null }
   }
 
   # 4) ferramenta falhou (failAt novo): inseto
@@ -219,10 +260,12 @@ function Cena-Gatilhos($v, [double]$t) {
   # 5) turno terminou: plugue ("feature pronta")
   if ($mudouModo -and $mode -eq 'done') { Cena-Tocar 'plugue' $t; return }
 
-  # 5b) subagentes ativos: aguardando (so comeca sem outra cena: inseto/plugue terminam antes e ela volta)
-  if ($c -and $c.id -eq 'aguardando' -and $c.fase -ne 'sai' -and -not $querAg) { Cena-Parar $t; return }
+  # 5b) subagentes ativos: chefe, e depois de $CN_AG_SONO s, cochilo (so comeca sem outra cena: inseto/plugue terminam antes e ela volta)
+  if ($c -and (CN-EhAg $c.id) -and $c.fase -ne 'sai' -and -not $querAg) { Cena-Parar $t; return }
   if ($querAg) {
-    if (-not $c) { Cena-Tocar 'aguardando' $t -Laco }
+    $sono = (($t - $script:cnAgDesde) -ge $CN_AG_SONO)
+    if (-not $c) { Cena-Tocar $(if ($sono) { 'cochilo' } else { 'chefe' }) $t -Laco }
+    elseif ($c.id -eq 'chefe' -and $sono -and $c.fase -eq 'laco' -and ($t - $script:cnSaiu) -gt 1.0) { Cena-Fim $t; Cena-Tocar 'cochilo' $t -Laco }
     $script:cnProxOcioso = 0.0; return   # o rodizio do ocioso nao toca enquanto houver subagentes
   }
 
@@ -263,6 +306,8 @@ function Cena-Passo([double]$t) {
     $k = $seq[-1]
     foreach ($q in $seq) { if ($al -lt $q.ate) { $k = $q; break } }
     if ($c.id -eq 'pendurado') { $k = CN-Pendurado $k $t }
+    elseif ($c.id -eq 'chefe' -and $c.fase -eq 'laco') { $k = CN-ChefeKf $k $t ($t - $c.t0) }
+    elseif ($c.id -eq 'cochilo' -and $c.fase -eq 'laco') { $k = CN-CochiloKf $k $t $c.t0 }
     $script:cq = @{ id = $c.id; fase = $c.fase; a = $al; tc = $t - $c.t0; k = $k; fixo = $false }
     return
   }
@@ -310,6 +355,8 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'quadro' { if ($camada -eq 'atras') { CN-Quadro $cq $t } }
     'plugue' { if ($camada -eq 'atras') { CN-Plugue $cq $t } }
     'aguardando' { CN-Aguardando $cq $camada $t }
+    'chefe' { CN-Chefe $cq $camada $t }
+    'cochilo' { CN-Cochilo $cq $camada $t }
   }
 }
 
@@ -412,4 +459,128 @@ function CN-Aguardando($cq, [string]$camada, [double]$t) {
   if ($alto -gt 0.1) { U $CN_AREIA ($hx + 0.5) ($hy + 0.6 + (1.6 - $alto)) 2 $alto }
   if ($baixo -gt 0.1) { U $CN_AREIA ($hx + 0.5) ($hy + 4.4 - $baixo) 2 $baixo }
   if (-not $cq.fixo -and $p -lt 0.95) { U $CN_AREIA ($hx + 1.2) ($hy + 2.2) 0.6 1.6 }   # fio de areia
+}
+
+# ---------- chefe de obra ----------
+# posicao do mini-Claudinho i (de n) no tempo tc: vai e volta no chao entre -13 e 13, carregando caixa na ida
+function CN-MiniX([int]$i, [int]$n, [double]$tc) {
+  $per = 8.0; $u = ($tc + $i * $per / [math]::Max(1, $n)) % $per
+  if ($u -lt 4.0) { return @((-13.0 + 26.0 * $u / 4.0), 1) }
+  @((13.0 - 26.0 * ($u - 4.0) / 4.0), -1)
+}
+
+# mini-Claudinho de 4 x 3,4 no chao; dir: 1 direita / -1 esquerda
+function CN-Mini([double]$x, [int]$dir, [bool]$caixa, [int]$passo, [double]$aceno) {
+  $mb = '#d97757'; if ($B) { $mb = $B }          # $B e $ink vem do Draw-Mascot (escopo dinamico)
+  $mi = '#1c1410'; if ($ink) { $mi = $ink }
+  U $mb ($x - 2) (-3.4) 4 2.2
+  U $mb ($x - 1.5) (-1.2) 0.8 (1.2 - 0.5 * $passo); U $mb ($x + 0.7) (-1.2) 0.8 (0.7 + 0.5 * $passo)
+  $ex = $x - 1.1 + 0.4 * $dir
+  U $mi $ex (-2.8) 0.6 0.6; U $mi ($ex + 1.6) (-2.8) 0.6 0.6
+  if ($caixa) {
+    U $mb ($x - 2.6) (-4.4) 0.6 1.6; U $mb ($x + 2) (-4.4) 0.6 1.6        # bracos para cima
+    U $CN_CAIXA ($x - 1.6) (-5.6) 3.2 1.8; U $CN_CAIXAD ($x - 1.6) (-4.8) 3.2 0.4
+  } elseif ($aceno -ge 0) {
+    U $mb ($x - 2.6) (-2.8) 0.6 1
+    U $mb ($x + 2) (-5.0 + 0.6 * $aceno) 0.6 1.8                            # tchau
+  } else {
+    U $mb ($x - 2.6) (-2.8) 0.6 1; U $mb ($x + 2) (-2.8) 0.6 1
+  }
+}
+
+# olhos seguem o mini da frente; de tempos em tempos confere a prancheta; sorri quando alguem termina
+function CN-ChefeKf($k, [double]$t, [double]$tc) {
+  $kk = $k.Clone()
+  $n = [math]::Max(1, [math]::Min(3, $script:cnAgN))
+  $m = CN-MiniX 0 $n $tc
+  $kk.eyX = [math]::Max(-1.0, [math]::Min(1.0, $m[0] / 9.0))
+  $ciclo = $tc % 6.0
+  if ($ciclo -ge 4.2 -and $ciclo -lt 5.2) { $kk.eyX = 1.0; $kk.eyY = -12.5; $kk.tilt = $true }   # confere a prancheta
+  if (($t - $script:cnSaiu) -lt 0.9) { $kk.eyes = 'happy'; $kk.eyY = -14.0 }
+  $kk
+}
+
+function CN-Chefe($cq, [string]$camada, [double]$t) {
+  $tc = $cq.tc
+  if ($camada -eq 'frente') {
+    # minis trabalhando (na saida so o ultimo, acenando)
+    $n = $(if ($cq.fase -eq 'sai') { 0 } else { [math]::Max(1, [math]::Min(3, $script:cnAgN)) })
+    $passo = $(if ($cq.fixo) { 0 } else { ([int][math]::Floor($t * 8)) % 2 })
+    for ($i = 0; $i -lt $n; $i++) {
+      if ($cq.fixo) { $x = -10.0 + $i * 10.0; $d = 1 } else { $m = CN-MiniX $i $n $tc; $x = $m[0]; $d = $m[1] }
+      CN-Mini $x $d ($d -gt 0) $passo -1
+    }
+    # quem acabou de terminar: para onde estava, acena e some numa fumacinha
+    $w = $t - $script:cnSaiu
+    if ($w -ge 0 -and $w -lt 0.9 -and $script:cnSaiuIdx -lt 3 -and $script:cnSaiu -ge ($t - $tc)) {
+      $m = CN-MiniX $script:cnSaiuIdx $script:cnSaiuN ($script:cnSaiu - ($t - $tc))
+      if ($w -lt 0.6) { CN-Mini $m[0] $m[1] $false 0 ([math]::Abs([math]::Sin($w * 14))) }
+      else {
+        $r = 1.0 + ($w - 0.6) * 8
+        U $CN_FUMACA ($m[0] - $r) (-3.0 - $r * 0.4) 1 1; U $CN_FUMACA ($m[0] + $r - 1) (-3.0 - $r * 0.4) 1 1; U $CN_FUMACA ($m[0] - 0.5) (-4.0 - $r) 1 1
+      }
+    }
+    # prancheta na mao direita, com um check verde por subagente terminado
+    if ($cq.fase -ne 'sai' -or $cq.a -lt 0.3) {
+      $esc = $(if ($cq.fase -eq 'entra') { [math]::Min(1.0, $cq.a / 0.3) } else { 1.0 })
+      if ($esc -lt 0.2) { return }
+      $px = 9.5; $py = -13.0
+      U $CN_PRANCHA $px $py 3.5 (5 * $esc)
+      U $CN_PAPEL ($px + 0.5) ($py + 0.8) 2.5 (3.8 * $esc)
+      U $CN_QPE ($px + 1.1) ($py - 0.5) 1.3 0.8
+      if ($esc -lt 1) { return }
+      for ($l = 0; $l -lt 3; $l++) {
+        $ly = $py + 1.4 + $l * 1.1
+        if ($l -lt $script:cnFeitos) { U $CN_OK ($px + 0.8) $ly 0.6 0.5 }
+        U $CN_TINTA ($px + 1.6) $ly 1.1 0.4
+      }
+    }
+  }
+}
+
+# ---------- cochilo vigiado ----------
+function CN-CochiloKf($k, [double]$t, [double]$t0) {
+  $kk = $k.Clone()
+  if (-not $script:rm) { $kk.sy = 1.0 + 0.025 * [math]::Sin($t * 2.4) }   # respira
+  $ang = ($t - $t0) * 0.8
+  $kk.eyX = [math]::Cos($ang) * 1.0                                        # o olho aberto segue a 1a bolinha
+  $w = $t - $script:cnSaiu
+  if ($script:cnSaiu -ge $t0 -and $w -ge 0 -and $w -lt 1.4) {             # um subagente terminou: acorda num pulo
+    $kk.sy = 1.0; $kk.eyes = 'open'; $kk.eyX = 0.0
+    if ($w -lt 0.12) { $kk.lift = -2.5 }
+    elseif ($w -lt 0.4) { $kk.lift = 0.0; $kk.oy = -4.0; $kk.armL = -3.0; $kk.armR = -3.0; $kk.eyY = -15.0 }
+    else { $kk.lift = 0.0; $kk.eyX = $(if ($w -lt 0.9) { -1.0 } else { 1.0 }) }   # olha em volta
+  }
+  $kk
+}
+
+function CN-Cochilo($cq, [string]$camada, [double]$t) {
+  $tc = $cq.tc
+  $acordado = ($cq.fase -eq 'sai') -or (($t - $script:cnSaiu) -ge 0 -and ($t - $script:cnSaiu) -lt 1.4 -and $script:cnSaiu -ge ($t - $tc))
+  # bolinhas rosa (uma por subagente) orbitando devagar, bem menores que na aguardando
+  if ($cq.fase -ne 'sai') {
+    $n = [math]::Max(1, [math]::Min(3, $script:cnAgN))
+    for ($i = 0; $i -lt $n; $i++) {
+      $ang = $(if ($cq.fixo) { 0.6 + $i * 2.0944 } else { $tc * 0.8 + $i * 2.0944 })
+      $sn = [math]::Sin($ang)
+      if (($camada -eq 'atras') -ne ($sn -lt 0)) { continue }
+      $x = [math]::Cos($ang) * 13.0; $y = -8.0 + $sn * 6.0
+      U $SUBC ($x - 0.6) ($y - 0.6) 1.2 1.2
+    }
+  }
+  if ($camada -ne 'frente') { return }
+  if ($acordado) {
+    $w = $(if ($cq.fase -eq 'sai') { $cq.a } else { $t - $script:cnSaiu })
+    if ($w -lt 0.9) { U $CN_ALERTA 9.5 (-21.0) 1 2.4; U $CN_ALERTA 9.5 (-18.0) 1 0.9 }   # "!"
+    return
+  }
+  if ($cq.fase -eq 'entra') { return }
+  # "z" subindo da cabeca (dois, defasados); parado com reducao de movimento
+  for ($j = 0; $j -lt 2; $j++) {
+    $age = $(if ($cq.fixo) { 0.6 + $j * 0.8 } else { ($tc + $j * 0.8) % 1.6 })
+    $s = 0.5 + $age * 0.25
+    $zx = 3.5 + $age * 1.8; $zy = -16.5 - $age * 2.6
+    $cor = $(if ($age -lt 1.1) { $CN_Z } else { $CN_ZD })
+    U $cor $zx $zy (3 * $s) $s; U $cor ($zx + $s) ($zy + $s) $s $s; U $cor $zx ($zy + 2 * $s) (3 * $s) $s
+  }
 }
