@@ -13,7 +13,7 @@
 # Coordenadas: "pixels do bichinho" (a funcao U), x = 0 no centro do anel, y = 0 no chao, negativo = para cima.
 # O corpo de frente ocupa x -8..8 e y -16..0; o anel tem raio ~17 nessas unidades, com o centro em y = -8.
 #
-# Depuracao: CW_CENAS=0 desliga todas as cenas; CW_CENA=inseto|quadro|plugue|aguardando|chefe|cochilo repete essa cena em laco (bom para gravar GIF).
+# Depuracao: CW_CENAS=0 desliga todas as cenas; CW_CENA=inseto|quadro|plugue|aguardando|chefe|pescaria|cochilo repete essa cena em laco (bom para gravar GIF).
 
 # ---------- configuracao ----------
 $script:CN_ON = ($env:CW_CENAS -ne '0')
@@ -31,7 +31,10 @@ $CN_AREIA = '#e8c97a'; $CN_VIDRO = '#9aa0a8'   # ampulheta da cena aguardando (a
 $CN_CAIXA = '#c8a26a'; $CN_CAIXAD = '#9a7746'   # caixas dos mini-Claudinhos (chefe)
 $CN_PRANCHA = '#a0714f'; $CN_PAPEL = '#faf9f5'; $CN_OK = '#5fd38d'; $CN_FUMACA = '#a09d96'
 $CN_Z = '#a09d96'; $CN_ZD = '#6b6b66'; $CN_ALERTA = '#f5c542'
-# estado Agentes: comeca no chefe de obra; depois de $CN_AG_SONO s com subagentes rodando ele cansa e vai para o cochilo
+$CN_VARA = '#8b6a4a'; $CN_LINHA = '#c8c6bf'; $CN_LINHAD = '#6b6b66'; $CN_AGUA = '#4a90c8'; $CN_AGUAD = '#2f6a9a'; $CN_BOIA = '#ff5f56'
+# estado Agentes: comeca no chefe de obra ou na pescaria (alterna a cada vez que subagentes comecam);
+# depois de $CN_AG_SONO s com subagentes rodando ele cansa e vai para o cochilo
+$CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
 
 # ---------- estado ----------
@@ -45,7 +48,9 @@ $script:cnAgPrev = 0         # agentsN do quadro anterior (para perceber um suba
 $script:cnAgDesde = 0.0      # quando os subagentes comecaram (decide chefe -> cochilo)
 $script:cnSaiu = -99.0       # quando um subagente terminou por ultimo ($t)
 $script:cnSaiuIdx = 0; $script:cnSaiuN = 1   # qual mini-Claudinho saiu e quantos havia (para achar onde ele estava)
-$script:cnFeitos = 0         # subagentes terminados desde que comecaram (checks na prancheta, max 3)
+$script:cnFeitos = 0         # subagentes terminados desde que comecaram (checks na prancheta / peixes no pier, max 3)
+$script:cnAgVez = -1         # indice em $CN_AG_INICIO da cena de abertura atual
+$script:cnAgIni = 'chefe'    # cena de abertura do estado Agentes desta vez
 $script:cnFam = ''          # familia de modo vista no quadro anterior
 $script:cnModo = ''         # modo visto no quadro anterior
 $script:cnRnd = New-Object System.Random
@@ -127,6 +132,21 @@ $script:CENAS = @{
       @{ ate = 0.55; oy = -3.0; armL = -2.0; armR = -2.0; eyes = 'happy' }
       @{ ate = 0.8 }
     )) }
+  # 2) pescaria: sentado na ponta do pier, segura uma vara com uma linha por subagente (max 3) descendo para a agua;
+  # as boias balancam e de vez em quando afundam; quando um subagente termina ele puxa a linha e sai um peixinho rosa,
+  # que voa por cima dele e cai na pilha do pier; quando todos terminam, pesca o ultimo e pula (quadro dinamico em CN-PescaKf)
+  'pescaria' = @{ prio = 1.5
+    entra = (CN-Seq @(
+      @{ ate = 0.25; ox = -2.0; wf = 8.0 }
+      @{ ate = 0.5; ox = -4.0; lift = -2.0; eyX = 1.0; eyY = -13.0; armR = -1.0 }
+    ))
+    laco = (CN-Seq @( @{ ate = 8.0; ox = -4.0; lift = -2.0; eyX = 1.0; eyY = -13.0; armR = -1.0 } ))
+    sai = (CN-Seq @(
+      @{ ate = 0.3; ox = -4.0; lift = -2.0; armR = -3.0; eyX = 1.0; oy = -0.5 }
+      @{ ate = 1.1; ox = -4.0; lift = -2.0; armR = -2.0; eyes = 'happy' }
+      @{ ate = 1.35; ox = -4.0; oy = -3.0; armL = -2.0; armR = -2.0; eyes = 'happy' }
+      @{ ate = 1.6; ox = -4.0 }
+    )) }
   # 7) cochilo vigiado: sentado, cochila com "z" subindo mas com um olho aberto seguindo as bolinhas; quando um subagente
   # termina acorda num pulo com um "!" e volta a cochilar (quadro dinamico em CN-CochiloKf)
   'cochilo' = @{ prio = 1.5
@@ -152,7 +172,7 @@ $script:CENAS = @{
 }
 
 # ---------- motor ----------
-function CN-EhAg([string]$id) { $id -eq 'aguardando' -or $id -eq 'chefe' -or $id -eq 'cochilo' }
+function CN-EhAg([string]$id) { $id -eq 'aguardando' -or $id -eq 'chefe' -or $id -eq 'pescaria' -or $id -eq 'cochilo' }
 function CN-Fam([string]$mode, [bool]$loud) {
   if ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'agents') { return 'ocupado' }
   if ($mode -eq 'waiting' -and $loud) { return 'alerta' }
@@ -206,7 +226,10 @@ function Cena-Gatilhos($v, [double]$t) {
   $nAg = 0; try { $nAg = [int]$v.agentsN } catch { }
   $querAg = ($nAg -gt 0 -and $fam -ne 'alerta' -and $fam -ne 'erro')
   if ($nAg -gt 0) { $script:cnAgN = [math]::Min(3, $nAg) }
-  if ($nAg -gt 0 -and $script:cnAgPrev -le 0) { $script:cnAgDesde = $t; $script:cnFeitos = 0 }
+  if ($nAg -gt 0 -and $script:cnAgPrev -le 0) {   # subagentes comecaram: zera a contagem e alterna a cena de abertura
+    $script:cnAgDesde = $t; $script:cnFeitos = 0
+    $script:cnAgVez = ($script:cnAgVez + 1) % $CN_AG_INICIO.Count; $script:cnAgIni = $CN_AG_INICIO[$script:cnAgVez]
+  }
   if ($nAg -lt $script:cnAgPrev) {   # um (ou mais) subagente terminou
     $script:cnSaiu = $t; $script:cnSaiuIdx = $nAg; $script:cnSaiuN = [math]::Min(3, $script:cnAgPrev)
     $script:cnFeitos = [math]::Min(3, $script:cnFeitos + ($script:cnAgPrev - $nAg))
@@ -260,12 +283,12 @@ function Cena-Gatilhos($v, [double]$t) {
   # 5) turno terminou: plugue ("feature pronta")
   if ($mudouModo -and $mode -eq 'done') { Cena-Tocar 'plugue' $t; return }
 
-  # 5b) subagentes ativos: chefe, e depois de $CN_AG_SONO s, cochilo (so comeca sem outra cena: inseto/plugue terminam antes e ela volta)
+  # 5b) subagentes ativos: chefe ou pescaria, e depois de $CN_AG_SONO s, cochilo (so comeca sem outra cena: inseto/plugue terminam antes e ela volta)
   if ($c -and (CN-EhAg $c.id) -and $c.fase -ne 'sai' -and -not $querAg) { Cena-Parar $t; return }
   if ($querAg) {
     $sono = (($t - $script:cnAgDesde) -ge $CN_AG_SONO)
-    if (-not $c) { Cena-Tocar $(if ($sono) { 'cochilo' } else { 'chefe' }) $t -Laco }
-    elseif ($c.id -eq 'chefe' -and $sono -and $c.fase -eq 'laco' -and ($t - $script:cnSaiu) -gt 1.0) { Cena-Fim $t; Cena-Tocar 'cochilo' $t -Laco }
+    if (-not $c) { Cena-Tocar $(if ($sono) { 'cochilo' } else { $script:cnAgIni }) $t -Laco }
+    elseif (($c.id -eq 'chefe' -or $c.id -eq 'pescaria') -and $sono -and $c.fase -eq 'laco' -and ($t - $script:cnSaiu) -gt 1.0) { Cena-Fim $t; Cena-Tocar 'cochilo' $t -Laco }
     $script:cnProxOcioso = 0.0; return   # o rodizio do ocioso nao toca enquanto houver subagentes
   }
 
@@ -308,6 +331,7 @@ function Cena-Passo([double]$t) {
     if ($c.id -eq 'pendurado') { $k = CN-Pendurado $k $t }
     elseif ($c.id -eq 'chefe' -and $c.fase -eq 'laco') { $k = CN-ChefeKf $k $t ($t - $c.t0) }
     elseif ($c.id -eq 'cochilo' -and $c.fase -eq 'laco') { $k = CN-CochiloKf $k $t $c.t0 }
+    elseif ($c.id -eq 'pescaria' -and $c.fase -eq 'laco') { $k = CN-PescaKf $k $t $c.t0 }
     $script:cq = @{ id = $c.id; fase = $c.fase; a = $al; tc = $t - $c.t0; k = $k; fixo = $false }
     return
   }
@@ -357,6 +381,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'aguardando' { CN-Aguardando $cq $camada $t }
     'chefe' { CN-Chefe $cq $camada $t }
     'cochilo' { CN-Cochilo $cq $camada $t }
+    'pescaria' { CN-Pescaria $cq $camada $t }
   }
 }
 
@@ -582,5 +607,109 @@ function CN-Cochilo($cq, [string]$camada, [double]$t) {
     $zx = 3.5 + $age * 1.8; $zy = -16.5 - $age * 2.6
     $cor = $(if ($age -lt 1.1) { $CN_Z } else { $CN_ZD })
     U $cor $zx $zy (3 * $s) $s; U $cor ($zx + $s) ($zy + $s) $s $s; U $cor $zx ($zy + 2 * $s) (3 * $s) $s
+  }
+}
+
+# ---------- pescaria ----------
+# geometria fixa (o corpo fica em ox = -4, sentado): mao direita ~ (7, -8), ponta da vara (11, -17), agua em y = 2,2
+$script:PQ_MAO = @(7.0, -8.0); $script:PQ_PONTA = @(11.0, -17.0); $script:PQ_AGUA = 2.2
+
+# linha reta de "pixels" de lado `esp` entre dois pontos
+function CN-Linha([double]$x0, [double]$y0, [double]$x1, [double]$y1, [string]$cor, [double]$esp) {
+  $d = [math]::Max([math]::Abs($x1 - $x0), [math]::Abs($y1 - $y0))
+  $n = [math]::Max(1, [int][math]::Ceiling($d / $esp))
+  for ($i = 0; $i -le $n; $i++) { $f = $i / $n; U $cor ($x0 + ($x1 - $x0) * $f - $esp / 2) ($y0 + ($y1 - $y0) * $f - $esp / 2) $esp $esp }
+}
+
+function CN-PqX([int]$i) { 6.0 + $i * 3.0 }   # onde a linha i entra na agua
+
+# a boia i afunda de vez em quando (deterministico, cada linha no seu ritmo)
+function CN-PqPuxao([int]$i, [double]$tc) {
+  $f = (($tc * 0.37 + $i * 0.61) % 1.0)
+  ($f -lt 0.06)
+}
+
+# janela da fisgada: $null ou o tempo desde que o subagente terminou (so se terminou durante esta cena)
+function CN-PqFisga([double]$t, [double]$tc) {
+  $w = $t - $script:cnSaiu
+  if ($script:cnSaiu -ge ($t - $tc) -and $w -ge 0 -and $w -lt 1.2) { return $w }
+  $null
+}
+
+function CN-PescaKf($k, [double]$t, [double]$t0) {
+  $kk = $k.Clone(); $tc = $t - $t0
+  $n = [math]::Max(1, [math]::Min(3, $script:cnAgN))
+  for ($i = 0; $i -lt $n; $i++) { if (CN-PqPuxao $i $tc) { $kk.eyY = -14.0; $kk.eyX = 1.0 } }   # boia afundou: olha
+  $w = CN-PqFisga $t $tc
+  if ($null -ne $w) {
+    if ($w -lt 0.3) { $kk.armR = -3.0; $kk.oy = -0.5 }        # puxa
+    elseif ($w -lt 1.1) { $kk.armR = -2.0; $kk.eyes = 'happy'; $kk.eyX = 0.0 }
+  }
+  $kk
+}
+
+# peixinho rosa de 3 x 1,6 (rabo do lado oposto a dir); balanca o rabo
+function CN-Peixe([double]$x, [double]$y, [int]$dir, [double]$t) {
+  U $SUBC ($x - 1.5) ($y - 0.8) 3 1.6
+  $rx = $(if ($dir -gt 0) { $x - 2.3 } else { $x + 1.5 })
+  $ab = $(if (([int][math]::Floor($t * 12)) % 2 -eq 0) { 0.0 } else { 0.4 })
+  U $SUBC $rx ($y - 0.9 + $ab) 0.8 0.8; U $SUBC $rx ($y + 0.1 - $ab) 0.8 0.8
+  $ox = $(if ($dir -gt 0) { $x + 0.7 } else { $x - 1.1 })
+  U '#1c1410' $ox ($y - 0.4) 0.4 0.4
+}
+
+function CN-Pescaria($cq, [string]$camada, [double]$t) {
+  $tc = $cq.tc
+  $vis = $(if ($cq.fase -eq 'entra') { [math]::Max(0.0, ($cq.a - 0.25) / 0.25) } else { 1.0 })
+  if ($camada -eq 'atras') {
+    # pier (tabua e um poste) e agua com ondinhas andando
+    U $CN_VARA (-15.0) 0 18 0.8; U $CN_CAIXAD 1.5 0.8 0.8 3
+    $desl = $(if ($cq.fixo) { 0.0 } else { ($tc * 1.5) % 3.0 })
+    for ($wx = 3.0 - $desl; $wx -lt 14.0; $wx += 3.0) { if ($wx -ge 3.0) { U $CN_AGUA $wx $script:PQ_AGUA 1.6 0.6 } }
+    for ($wx = 4.5 + $desl; $wx -lt 13.0; $wx += 3.0) { U $CN_AGUAD $wx ($script:PQ_AGUA + 1.4) 1.2 0.5 }
+    return
+  }
+  # frente: peixes ja pescados na pilha do pier
+  for ($j = 0; $j -lt $script:cnFeitos; $j++) {
+    $chegou = $true
+    $w = CN-PqFisga $t $tc
+    if ($null -ne $w -and $j -eq $script:cnFeitos - 1 -and $w -lt 1.1) { $chegou = $false }
+    if ($cq.fase -eq 'sai' -and $j -eq $script:cnFeitos - 1 -and $cq.a -lt 1.1) { $chegou = $false }
+    if ($chegou) { CN-Peixe (-10.0 + $j * 3.2) (-1.0) 1 0 }
+  }
+  if ($vis -le 0) { return }
+  if ($cq.fase -eq 'sai' -and $cq.a -ge 1.1) { return }   # soltou a vara para pular
+  # vara: da mao ate a ponta (a ponta sobe quando ele puxa)
+  $w = $(if ($cq.fase -eq 'sai') { $cq.a } else { CN-PqFisga $t $tc })
+  $pxp = $script:PQ_PONTA[0]; $pyp = $script:PQ_PONTA[1]
+  if ($null -ne $w -and $w -lt 0.3) { $pyp -= 1.5; $pxp -= 1.0 }
+  CN-Linha $script:PQ_MAO[0] $script:PQ_MAO[1] $pxp $pyp $CN_VARA 0.8
+  # linhas e boias (uma por subagente); a da fisgada vira o peixe subindo
+  $n = $(if ($cq.fase -eq 'sai') { 1 } else { [math]::Max(1, [math]::Min(3, $script:cnAgN)) })
+  $iFis = -1
+  if ($null -ne $w) { $iFis = $(if ($cq.fase -eq 'sai') { 0 } else { [math]::Min(2, $script:cnSaiuIdx) }) }
+  $nDes = [math]::Max($n, $iFis + 1)
+  for ($i = 0; $i -lt $nDes; $i++) {
+    $lx = CN-PqX $i
+    if ($i -eq $iFis) {
+      # peixe: sai da agua, sobe em arco por cima dele e cai na pilha do pier
+      if ($w -lt 1.1) {
+        $f = [math]::Min(1.0, $w / 1.1)
+        $dx = -10.0 + ($script:cnFeitos - 1) * 3.2
+        $fx = $lx + ($dx - $lx) * $f
+        $fy = $script:PQ_AGUA + (-1.0 - $script:PQ_AGUA) * $f - 80.0 * $f * (1 - $f)   # arco por cima da cabeca
+        if ($w -lt 0.35) { CN-Linha $pxp $pyp $fx ($fy - 0.8) $CN_LINHA 0.4 }   # ainda preso na linha
+        CN-Peixe $fx $fy -1 $t
+        if ($w -lt 0.25) { U $CN_AGUA ($lx - 1.5) ($script:PQ_AGUA - 0.8) 0.6 0.6; U $CN_AGUA ($lx + 1) ($script:PQ_AGUA - 1) 0.6 0.6 }   # respingo
+      }
+      continue
+    }
+    if ($i -ge $n) { continue }
+    $puxa = (-not $cq.fixo) -and (CN-PqPuxao $i $tc)
+    $bob = $(if ($cq.fixo) { 0.0 } elseif ($puxa) { 0.8 } else { 0.25 * [math]::Sin($tc * 3.0 + $i * 1.7) })
+    $by = $script:PQ_AGUA - 0.6 + $bob
+    CN-Linha $pxp $pyp $lx ($by - 0.6) $CN_LINHA 0.4
+    U $CN_LINHAD ($lx - 0.2) ($script:PQ_AGUA + 0.6) 0.4 4.5          # linha seguindo para o fundo (sai do quadro)
+    U $CN_BOIA ($lx - 0.5) ($by - 0.6) 1 0.6; U $CN_PAPEL ($lx - 0.5) $by 1 0.5
   }
 }

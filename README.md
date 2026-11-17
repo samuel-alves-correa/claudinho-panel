@@ -116,13 +116,13 @@ Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fix
 | 💻 Codando | vira, agacha na frente do notebook (tela piscando) e trota no lugar, arco girando no anel |
 | 🔍 Lendo | passeia devagar, arco girando no anel |
 | 💬 Sua vez | acena por ~3 s e fica parado, sem alerta (cor neutra); o widget passa a redesenhar ~4x/s |
-| 🤖 Agentes | subagente rodando com a conversa principal em Sua vez ou Ocioso (o ✅ Terminou ainda aparece por 4 s antes): cena `chefe` (prancheta e mini-Claudinhos carregando caixas, um por subagente) e, depois de 25 s, `cochilo` (cochila com um olho aberto e acorda num pulo quando um subagente termina) |
+| 🤖 Agentes | subagente rodando com a conversa principal em Sua vez ou Ocioso (o ✅ Terminou ainda aparece por 4 s antes): cena `chefe` (prancheta e mini-Claudinhos carregando caixas) ou `pescaria` (uma linha por subagente; cada um que termina vira um peixe), alternando, e depois de 25 s, `cochilo` (cochila com um olho aberto e acorda num pulo quando um subagente termina) |
 | 🟡 Aguardando você | pula com os braços para cima e o anel âmbar pulsa (~3 ciclos, depois fixo) |
 | ✅ Terminou | pulinho, anel verde (o verde fica até você passar o mouse) |
 | ❌ Erro | treme com olhos em X, anel vermelho (só quando o turno termina com erro) |
 | Fechado | parado, olhos fechados, sem animação (nenhuma sessão viva) |
 
-**Cenas** (`widget/cenas.ps1`, detalhes em `docs/cenas.md`): subagente ativo → chefe de obra com mini-Claudinhos (um por subagente) e, depois de 25 s, cochilo vigiado; ferramenta falhou → uma joaninha entra e leva um tapa; pergunta ou plano esperando você → quadro com "?" ao lado; turno terminou → plugue encaixa; arrastar o widget → fica pendurado e quica ao soltar; parado em Ocioso/Sua vez → uma delas a cada 40–80 s. `CW_CENAS=0` desliga; `CW_CENA=<nome>` repete uma em laço.
+**Cenas** (`widget/cenas.ps1`, detalhes em `docs/cenas.md`): subagente ativo → chefe de obra ou pescaria (um mini-Claudinho ou uma linha por subagente) e, depois de 25 s, cochilo vigiado; ferramenta falhou → uma joaninha entra e leva um tapa; pergunta ou plano esperando você → quadro com "?" ao lado; turno terminou → plugue encaixa; arrastar o widget → fica pendurado e quica ao soltar; parado em Ocioso/Sua vez → uma delas a cada 40–80 s. `CW_CENAS=0` desliga; `CW_CENA=<nome>` repete uma em laço.
 
 Campos do JSON por estado: `name` (nome completo, título do balão), `short` (nome curto sob o mascote, cabe em ~64 px) e `labelShort` (label curto: alvo da ferramenta, como `claudinho-state.json`, ou o próprio label).
 
