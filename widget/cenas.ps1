@@ -38,7 +38,7 @@ $CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
 # cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
-$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6; fumaca = 0.9 }
+$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6; fumaca = 0.9; placa = 0.3 }
 $CN_OKD = '#3a9a63'     # verde escuro (bandeira)
 $CN_LENTE = '#9fd0f5'   # vidro da lupa (aro $CN_AGULHA, cabo $CN_VARA, pegadas $CN_PATA)
 $CN_LAMPF = '#8a7a3a'; $CN_LAMPM = '#c9ad4a'; $CN_LAMPA = '#ffe066'   # lampada fraca, piscando e acesa
@@ -249,6 +249,20 @@ $script:CENAS = @{
       @{ ate = 0.9; ox = 3.0; eyes = 'x'; eyX = -1.0 }
       @{ ate = 3.0; ox = 3.0; eyes = 'x'; eyX = -1.0; eyY = -13.0; tilt = $true }
     )) }
+  # Aguardando permissao: levanta uma placa "OK?" na mao direita e balanca de leve (informa: com reducao de movimento fica parada)
+  'placa' = @{ prio = 0.5; estado = $true
+    entra = (CN-Seq @(
+      @{ ate = 0.2; ox = -2.5; wf = 8.0 }
+      @{ ate = 0.4; ox = -4.5; armR = -1.0 }
+    ))
+    laco = (CN-Seq @(
+      @{ ate = 1.2; ox = -4.5; armR = -1.0; eyX = 0.5 }
+      @{ ate = 2.4; ox = -4.5; armR = -1.0; eyX = 0.5; tilt = $true }
+    ))
+    sai = (CN-Seq @(
+      @{ ate = 0.25; ox = -4.5; armR = -1.0 }
+      @{ ate = 0.5; ox = -2.5; wf = 8.0 }
+    )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -268,6 +282,7 @@ function CN-Estado($v, [string]$mode, [string]$fam) {
   $tool = [string]$v.tool
   if ($mode -eq 'thinking') { return 'lampada' }
   if ($mode -eq 'error') { return 'fumaca' }
+  if ($fam -eq 'alerta' -and $v.askKind -eq 'permissao') { return 'placa' }
   if ($mode -eq 'reading' -and ($tool -eq 'Read' -or $tool -eq 'Glob' -or $tool -eq 'LS')) { return 'lupa' }
   if ($mode -eq 'coding' -and $tool -eq 'Bash') { return 'terminal' }
   if ($mode -eq 'coding' -and ($tool -eq 'Edit' -or $tool -eq 'MultiEdit' -or $tool -eq 'NotebookEdit')) { return 'costura' }
@@ -371,7 +386,7 @@ function Cena-Gatilhos($v, [double]$t) {
   if ($c -and $mudouFam -and $c.id -ne 'aterrissa' -and -not ((CN-EhAg $c.id) -and $querAg)) {
     # o quadro sai girando; as cenas de subagente tocam a saida (pulo) quando eles acabam e ele fica parado; o resto some
     # (a lampada tambem sai acendendo: ela marca o fim do Pensando)
-    if ($c.id -eq 'quadro' -or $c.id -eq 'lampada' -or ((CN-EhAg $c.id) -and $fam -eq 'calmo')) { Cena-Parar $t } else { Cena-Fim $t; $c = $null }
+    if ($c.id -eq 'quadro' -or $c.id -eq 'lampada' -or $c.id -eq 'placa' -or ((CN-EhAg $c.id) -and $fam -eq 'calmo')) { Cena-Parar $t } else { Cena-Fim $t; $c = $null }
   }
 
   # 4) ferramenta falhou (failAt novo): inseto
@@ -505,6 +520,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'lupa' { CN-Lupa $cq $camada }
     'fumaca' { CN-Fumaca $cq $camada }
     'bandeira' { if ($camada -eq 'frente') { CN-Bandeira $cq $t } }
+    'placa' { if ($camada -eq 'frente') { CN-Placa $cq $t } }
   }
 }
 
@@ -1026,4 +1042,30 @@ function CN-Bandeira($cq, [double]$t) {
     $r = ($a - 0.45) * 4
     U $CN_FUMACA (8.6 - $r) (-0.8) 0.6 0.6; U $CN_FUMACA (10.8 + $r) (-0.8) 0.6 0.6
   }
+}
+
+# ---------- placa (Aguardando permissao) ----------
+# Placa de 7,8 x 5 na mao direita levantada (x 3,3..11,1, y -17,5..-12,5; com o balanco de +-0,4, cantos a <= 14,9 do centro),
+# num cabo marrom, moldura cinza, fundo de papel e "OK?" em traco de 0,7. Sobe na entrada e desce na saida.
+function CN-Placa($cq, [double]$t) {
+  $dy = 0.0
+  if ($cq.fase -eq 'entra') { if ($cq.a -lt 0.2) { return }; $dy = 4.0 * (1.0 - ($cq.a - 0.2) / 0.2) }
+  elseif ($cq.fase -eq 'sai') { $dy = 4.0 * $cq.a / 0.25; if ($dy -ge 4.0) { return } }
+  $dx = $(if ($cq.fixo -or $script:rm -or $cq.fase -ne 'laco') { 0.0 } else { 0.4 * [math]::Sin($t * 3.0) })
+  $x = 3.3 + $dx; $y = -17.5 + $dy
+  U $CN_VARA ($x + 2.7) ($y + 5.0) 0.8 (2.5 - [math]::Min(2.5, $dy))   # cabo ate a mao
+  U $CN_QBORDA $x $y 7.8 5.0
+  U $CN_PAPEL ($x + 0.4) ($y + 0.4) 7.0 4.2
+  if ($dy -gt 1.0) { return }
+  $bx = $x + 0.5; $by = $y + 1.0
+  # O
+  U $CN_TINTA $bx $by 2.0 0.7; U $CN_TINTA $bx ($by + 2.3) 2.0 0.7; U $CN_TINTA $bx $by 0.7 3.0; U $CN_TINTA ($bx + 1.3) $by 0.7 3.0
+  # K
+  $kx = $bx + 2.6
+  U $CN_TINTA $kx $by 0.7 3.0; U $CN_TINTA ($kx + 0.7) ($by + 1.15) 0.7 0.7
+  U $CN_TINTA ($kx + 1.4) $by 0.7 1.15; U $CN_TINTA ($kx + 1.4) ($by + 1.85) 0.7 1.15
+  # ?
+  $qx = $bx + 4.8
+  U $CN_TINTA $qx $by 1.9 0.7; U $CN_TINTA ($qx + 1.2) ($by + 0.5) 0.7 0.9
+  U $CN_TINTA ($qx + 0.6) ($by + 1.3) 0.7 0.6; U $CN_TINTA ($qx + 0.6) ($by + 2.3) 0.7 0.7
 }
