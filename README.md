@@ -37,6 +37,7 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 | `prompt.submit` | 🧠 **Pensando** (zera o relógio do turno) |
 | `tool.call` (Edit, Write, Bash, PowerShell, outros) | 💻 **Codando** e conta a ferramenta (top 5, histórico) |
 | qualquer evento de **subagente** (`agentId` / `agent_id`) | não troca o estado do mascote: a ferramenta só é contada e entra no histórico com `↳`. Exceção: pedido de permissão de subagente ainda vira 🟡, e a ferramenta seguinte dele devolve o estado da conversa principal |
+| subagente ativo (`$.agent.list`, status pending/running/waiting) | 🤖 **Agentes** (exibido, não guardado): só no lugar de Sua vez e Ocioso (não troca Pensando/Codando/Lendo, alertas nem Erro; Terminou aparece 4 s antes). Cor rosa dos subagentes, sem alerta; o timer de Ocioso (2 min) não dispara; ao acabar o último volta a 💬 Sua vez |
 | `tool.call` (Read, Grep, Glob, LS, WebSearch, WebFetch) | 🔍 **Lendo/pesquisando** (cor própria, roxa) |
 | `tool.call` (AskUserQuestion, ExitPlanMode) | 🟡 **Aguardando você** (em alerta) |
 | `classic.PermissionRequest` | 🟡 **Aguardando você** (em alerta: precisa de permissão) |
@@ -115,12 +116,13 @@ Depuração: `CW_PIN=mascot|limits|ctx|sub` inicia com o balão daquele item fix
 | 💻 Codando | vira, agacha na frente do notebook (tela piscando) e trota no lugar, arco girando no anel |
 | 🔍 Lendo | passeia devagar, arco girando no anel |
 | 💬 Sua vez | acena por ~3 s e fica parado, sem alerta (cor neutra); o widget passa a redesenhar ~4x/s |
+| 🤖 Agentes | subagente rodando com a conversa principal em Sua vez ou Ocioso (o ✅ Terminou ainda aparece por 4 s antes): cena `aguardando` (bolinhas rosa orbitando, bate o pé, ampulheta), anel rosa girando |
 | 🟡 Aguardando você | pula com os braços para cima e o anel âmbar pulsa (~3 ciclos, depois fixo) |
 | ✅ Terminou | pulinho, anel verde (o verde fica até você passar o mouse) |
 | ❌ Erro | treme com olhos em X, anel vermelho (só quando o turno termina com erro) |
 | Fechado | parado, olhos fechados, sem animação (nenhuma sessão viva) |
 
-**Cenas** (`widget/cenas.ps1`, detalhes em `docs/cenas.md`): ferramenta falhou → uma joaninha entra e leva um tapa; pergunta ou plano esperando você → quadro com "?" ao lado; turno terminou → plugue encaixa; arrastar o widget → fica pendurado e quica ao soltar; parado em Ocioso/Sua vez → uma delas a cada 40–80 s. `CW_CENAS=0` desliga; `CW_CENA=<nome>` repete uma em laço.
+**Cenas** (`widget/cenas.ps1`, detalhes em `docs/cenas.md`): subagente ativo → bolinhas rosa orbitando (uma por subagente); ferramenta falhou → uma joaninha entra e leva um tapa; pergunta ou plano esperando você → quadro com "?" ao lado; turno terminou → plugue encaixa; arrastar o widget → fica pendurado e quica ao soltar; parado em Ocioso/Sua vez → uma delas a cada 40–80 s. `CW_CENAS=0` desliga; `CW_CENA=<nome>` repete uma em laço.
 
 Campos do JSON por estado: `name` (nome completo, título do balão), `short` (nome curto sob o mascote, cabe em ~64 px) e `labelShort` (label curto: alvo da ferramenta, como `claudinho-state.json`, ou o próprio label).
 

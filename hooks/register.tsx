@@ -42,18 +42,18 @@ const ASKS: Record<string, { label: string; ask: string; kind: AskKind }> = {
 
 const NAMES: Record<Mode, string> = {
   waiting: 'Aguardando você', coding: 'Codando', thinking: 'Pensando',
-  reading: 'Lendo/pesquisando', idle: 'Ocioso', done: 'Terminou', error: 'Erro',
+  reading: 'Lendo/pesquisando', idle: 'Ocioso', done: 'Terminou', error: 'Erro', agents: 'Agentes',
 }
 const EMOJI: Record<Mode, string> = {
-  waiting: '🟡', coding: '💻', thinking: '🧠', reading: '🔍', idle: '😴', done: '✅', error: '❌',
+  waiting: '🟡', coding: '💻', thinking: '🧠', reading: '🔍', idle: '😴', done: '✅', error: '❌', agents: '🤖',
 }
 const COLOR: Record<Mode, string> = {
   waiting: '#f5c542', coding: '#d97757', thinking: '#6cc4e8', reading: '#a78bfa',
-  idle: '#7d7a76', done: '#5fd38d', error: '#ff5f56',
+  idle: '#7d7a76', done: '#5fd38d', error: '#ff5f56', agents: '#f472b6',   // agents = cor dos subagentes ($SUBC do widget)
 }
 const SHORT: Record<Mode, string> = {
   waiting: 'Responda', coding: 'Codando', thinking: 'Pensando', reading: 'Lendo',
-  idle: 'Ocioso', done: 'Terminou', error: 'Erro',
+  idle: 'Ocioso', done: 'Terminou', error: 'Erro', agents: 'Agentes',
 }
 // waiting sem loud = "sua vez" (neutro); com loud = permissão/pergunta pendente (amarelo, alerta)
 const nameOf = (mode: Mode, loud: boolean): string => (mode === 'waiting' && !loud ? 'Sua vez' : NAMES[mode])
@@ -67,6 +67,13 @@ async function activeAgents($: Dollar): Promise<{ id: string; type: string; desc
   const list = ((await $.agent.list().catch(() => [])) ?? []) as { id: string; type: string; description: string; status: string }[]
   return list.filter(a => ACTIVE.has(a.status)).map(a => ({ id: a.id, type: a.type, desc: a.description }))
 }
+
+// Estado exibido (derivado, não guardado): com subagente rodando, Sua vez/Ocioso viram 'agents' (não é alerta).
+// Terminou, Pensando, Codando, Lendo, Erro e os alertas continuam como estão.
+const agentsLabel = (n: number): string => (n === 1 ? '1 subagente trabalhando' : `${n} subagentes trabalhando`)
+const shownMode = (s: St, nAgents: number): Mode => (nAgents > 0 && (s.mode === 'idle' || (s.mode === 'waiting' && !s.loud)) ? 'agents' : s.mode)
+// quantos subagentes ativos o último publish viu (a linha de status usa)
+let agentCount = 0
 
 // Evento vindo do loop de um subagente/teammate (tool.call e turn.complete trazem agentId; os classic, agent_id).
 const fromSub = (e: unknown): boolean => {
@@ -113,17 +120,20 @@ async function publish($: Dollar, offline = false, sidOverride = '') {
     return { type: a.type, desc: a.desc, model: am ? prettyModel(am) : '' }
   })
   // "terminou há X" só faz sentido enquanto a sessão está parada depois do turno
-  const showDone = s.mode === 'done' || s.mode === 'idle' || (s.mode === 'waiting' && !s.loud)
+  agentCount = agents.length
+  const dm = shownMode(s, agents.length)
+  const showDone = s.mode === 'done' || (dm !== 'agents' && (s.mode === 'idle' || (s.mode === 'waiting' && !s.loud)))
   const out = {
     sid, offline, model, agents, limits: s.limits ?? [],
-    project, ts: now, mode: s.mode, loud: s.loud, label: s.label, labelShort: s.labelShort || s.label,
-    name: nameOf(s.mode, s.loud), short: shortOf(s.mode, s.loud),
-    color: colorOf(s.mode, s.loud), palette: m.palette,
+    project, ts: now, mode: dm, loud: s.loud, label: dm === 'agents' ? agentsLabel(agents.length) : s.label,
+    labelShort: dm === 'agents' ? agentsLabel(agents.length) : s.labelShort || s.label,
+    name: nameOf(dm, s.loud), short: shortOf(dm, s.loud),
+    color: colorOf(dm, s.loud), palette: m.palette,
     sessionStart: s.sessionStart, turnStart: s.turnStart, doneAt: showDone ? s.doneAt : 0,
     tokens: s.hasUsage ? { in: s.inTok, out: s.outTok, cache: s.cacheTok } : null,
     ctxPct: s.ctxPct, usd: s.usd, ctxTok: s.ctxTok, ctxWin: s.ctxWin,
-    ask: s.mode === 'waiting' ? s.ask : '', waitSince: s.mode === 'waiting' ? s.waitSince : 0,
-    askKind: s.mode === 'waiting' && s.loud ? s.askKind : '', failAt: s.failAt,
+    ask: dm === 'waiting' ? s.ask : '', waitSince: dm === 'waiting' ? s.waitSince : 0,
+    askKind: dm === 'waiting' && s.loud ? s.askKind : '', failAt: s.failAt,
     top: Object.entries(s.counts).sort((a, b) => b[1] - a[1]).slice(0, 5),
     history: s.history.slice(-6).reverse().map(h => ({ t: h.t, text: h.text })),
   }
@@ -158,8 +168,16 @@ async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> 
     flashUntil: mode === 'done' || mode === 'error' ? now + FLASH_MS : 0,
   }))
   await publish($)
-  const nm = nameOf(mode, loud)
-  $.ui.status(`${emojiOf(mode, loud)} ${nm}${label && label !== nm ? ' — ' + label : ''}`)
+  await refreshStatus($)
+}
+
+// Linha de status (plano B): estado exibido + label; com subagente rodando, Sua vez/Ocioso viram Agentes.
+async function refreshStatus($: Dollar) {
+  const s: St = await read($, st)
+  const dm = shownMode(s, agentCount)
+  const nm = nameOf(dm, s.loud)
+  const label = dm === 'agents' ? agentsLabel(agentCount) : s.label
+  $.ui.status(`${emojiOf(dm, s.loud)} ${nm}${label && label !== nm ? ' — ' + label : ''}`)
 }
 
 // Ferramenta da conversa principal terminou (ou falhou): volta a Pensando, mas deixa
@@ -203,17 +221,21 @@ export const register: Register = on => {
     const t = $.clock.every(TICK_MS, async () => {
       const n = await $.clock.now()
       const s = await read($, st)
+      const act = await activeAgents($)
       if ((s.mode === 'done' || s.mode === 'error') && n > s.flashUntil) {
         if (s.mode === 'done') await setMode($, 'waiting', 'sua vez de mandar mensagem')
         else if (s.busy) await setMode($, 'thinking', 'continuando')
         else await setMode($, 'waiting', 'sua vez de mandar mensagem')
-      } else if (s.mode === 'waiting' && !s.loud && n - s.since > IDLE_AFTER_MS) {
+      } else if (s.mode === 'waiting' && !s.loud && act.length === 0 && n - s.since > IDLE_AFTER_MS) {   // com subagente rodando não vira Ocioso
         await setMode($, 'idle', 'sem atividade')
       }
       // subagente começou ou terminou: republica para o widget atualizar a lista
-      const sig = (await activeAgents($)).map(a => a.id).join(',')
+      const sig = act.map(a => a.id).join(',')
       let dirty = sig !== agentSig
+      const acabaram = dirty && agentSig !== '' && sig === ''
       agentSig = sig
+      // o último subagente terminou: volta a Sua vez normalmente (reinicia o relógio do Ocioso)
+      if (acabaram && (s.mode === 'waiting' || s.mode === 'idle') && !s.loud) await setMode($, 'waiting', 'sua vez de mandar mensagem')
       // limites: relê 1x por minuto, senão só mudam quando um turno termina
       if (n - limitsAt >= LIMITS_EVERY_MS) {
         limitsAt = n
@@ -229,6 +251,7 @@ export const register: Register = on => {
       if (dirty || n - publishedAt >= HEARTBEAT_MS) {
         await publish($)
         publishedAt = n
+        if (dirty) await refreshStatus($)   // linha de status acompanha Agentes <-> Sua vez
       }
     })
     cancelTick = () => t.cancel()

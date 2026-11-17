@@ -1,6 +1,6 @@
 {
   "name": "claudinho-panel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mascote em pixel art num notch na borda da tela que mostra o estado do agente e o uso da sessão.",
   "types": "./types/index.d.ts"
 }

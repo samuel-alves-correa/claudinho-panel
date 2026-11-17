@@ -477,12 +477,12 @@ function DoneUnacked($o, [string]$sid) {
   if (-not (($m -eq 'waiting' -and -not $o.loud) -or $m -eq 'idle')) { return $false }
   -not ($script:ack.ContainsKey($sid) -and $script:ack[$sid] -ge $da)
 }
-# urgencia: waiting+loud > error > thinking/coding/reading > done (ou terminou nao visto) > waiting > idle
+# urgencia: waiting+loud > error > thinking/coding/reading/agents > done (ou terminou nao visto) > waiting > idle
 function Rank($o, [string]$sid) {
   $m = [string]$o.mode
   if ($m -eq 'waiting' -and $o.loud) { return 6 }
   if ($m -eq 'error') { return 5 }
-  if ($m -eq 'thinking' -or $m -eq 'coding' -or $m -eq 'reading') { return 4 }
+  if ($m -eq 'thinking' -or $m -eq 'coding' -or $m -eq 'reading' -or $m -eq 'agents') { return 4 }
   if ($m -eq 'done' -or (DoneUnacked $o $sid)) { return 3 }
   if ($m -eq 'waiting') { return 2 }
   1
@@ -625,7 +625,7 @@ function Update-View([double]$nowMs) {
     if ($mode -eq 'waiting' -and $loud) { $v.ring = 'loud' }
     elseif ($mode -eq 'error') { $v.ring = 'error' }
     elseif ($mode -eq 'done' -or $v.doneShow) { $v.ring = 'done' }
-    elseif ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading') { $v.ring = 'spin' }
+    elseif ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'agents') { $v.ring = 'spin' }
     # linhas de uso (expandido) e resumo para o balao do mascote (reduzido)
     $parts = New-Object System.Collections.ArrayList
     foreach ($spec in @(@('five_hour', '5h'), @('seven_day', '7d'))) {

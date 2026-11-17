@@ -13,7 +13,7 @@
 # Coordenadas: "pixels do bichinho" (a funcao U), x = 0 no centro do anel, y = 0 no chao, negativo = para cima.
 # O corpo de frente ocupa x -8..8 e y -16..0; o anel tem raio ~17 nessas unidades, com o centro em y = -8.
 #
-# Depuracao: CW_CENAS=0 desliga todas as cenas; CW_CENA=inseto|quadro|plugue repete essa cena em laco (bom para gravar GIF).
+# Depuracao: CW_CENAS=0 desliga todas as cenas; CW_CENA=inseto|quadro|plugue|aguardando repete essa cena em laco (bom para gravar GIF).
 
 # ---------- configuracao ----------
 $script:CN_ON = ($env:CW_CENAS -ne '0')
@@ -27,6 +27,7 @@ $CN_RODIZIO = @('plugue', 'inseto', 'quadro')
 $CN_BUG = '#e5484d'; $CN_BUGD = '#7a1f22'; $CN_PATA = '#8a8a8a'
 $CN_QFACE = '#bfe9d9'; $CN_QBORDA = '#9aa0a8'; $CN_QPE = '#6b7078'; $CN_TINTA = '#1b1b1b'; $CN_PINCEL = '#8b7cf6'
 $CN_PLUG = '#9aa0a8'; $CN_PLUGD = '#6b7078'; $CN_FAISCA = '#f5c542'
+$CN_AREIA = '#e8c97a'; $CN_VIDRO = '#9aa0a8'   # ampulheta da cena aguardando (as bolinhas usam $SUBC do widget)
 
 # ---------- estado ----------
 $script:cena = $null        # @{ id; prio; fase = 'entra'|'laco'|'sai'; tf = inicio da fase; t0 = inicio da cena; voltas; fixo; fam }
@@ -34,6 +35,7 @@ $script:cq = $null          # quadro atual: @{ id; fase; a = tempo na fase; tc =
 $script:cnFalhaVista = -1.0 # failAt ja tratado (-1 = ainda nao leu: o 1o valor so e registrado, nao toca)
 $script:cnProxOcioso = 0.0  # quando tocar a proxima cena do rodizio
 $script:cnUltima = ''       # ultima cena do rodizio (nao repete seguida)
+$script:cnAgN = 0            # bolinhas da cena aguardando (1..3): ultimo agentsN > 0 visto (a saida ainda precisa dele)
 $script:cnFam = ''          # familia de modo vista no quadro anterior
 $script:cnModo = ''         # modo visto no quadro anterior
 $script:cnRnd = New-Object System.Random
@@ -89,6 +91,21 @@ $script:CENAS = @{
       @{ ate = 1.1; eyes = 'squint'; tilt = $true }
       @{ ate = 1.4 }
     )) }
+  # subagentes rodando (inspirada no app): ele espera batendo o pe devagar e olhando de lado a lado, com uma bolinha rosa
+  # por subagente (max 3) orbitando; no laco o numero de bolinhas acompanha agentsN; ao acabar elas voam para ele e ele pula
+  'aguardando' = @{ prio = 1.5
+    entra = (CN-Seq @( @{ ate = 0.3; wf = 3.0 } ))
+    laco = (CN-Seq @(
+      @{ ate = 0.6; wf = 3.0; eyX = -1.0 }
+      @{ ate = 1.2; wf = 3.0 }
+      @{ ate = 1.8; wf = 3.0; eyX = 1.0; tilt = $true }
+      @{ ate = 2.4; wf = 3.0 }
+    ))
+    sai = (CN-Seq @(
+      @{ ate = 0.2; sy = 0.95 }
+      @{ ate = 0.35; oy = -3.0; armL = -2.0; armR = -2.0 }
+      @{ ate = 0.5 }
+    )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -102,7 +119,7 @@ $script:CENAS = @{
 
 # ---------- motor ----------
 function CN-Fam([string]$mode, [bool]$loud) {
-  if ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading') { return 'ocupado' }
+  if ($mode -eq 'thinking' -or $mode -eq 'coding' -or $mode -eq 'reading' -or $mode -eq 'agents') { return 'ocupado' }
   if ($mode -eq 'waiting' -and $loud) { return 'alerta' }
   if ($mode -eq 'error') { return 'erro' }
   if ($mode -eq 'offline' -or $mode -eq '') { return 'off' }
@@ -120,7 +137,7 @@ function Cena-Tocar([string]$id, [double]$t, [switch]$Forcar, [switch]$Laco, [in
   # reducao de movimento: so a cena que informa algo (quadro em laco = pergunta pendente) aparece, e parada
   if ($fixo -and -not ($Laco -and $def.laco)) { $script:cena = $null; return }
   $fase = $(if ($def.entra -and -not $fixo) { 'entra' } elseif ($def.laco) { 'laco' } else { 'sai' })
-  $script:cena = @{ id = $id; prio = [int]$def.prio; fase = $fase; tf = $t; t0 = $t; laco = [bool]$Laco; voltas = $Voltas; fixo = $fixo }
+  $script:cena = @{ id = $id; prio = [double]$def.prio; fase = $fase; tf = $t; t0 = $t; laco = [bool]$Laco; voltas = $Voltas; fixo = $fixo }
 }
 
 # Pede para a cena sair (toca a fase 'sai' se houver; senao encerra na hora)
@@ -149,12 +166,21 @@ function Cena-Gatilhos($v, [double]$t) {
   $mudouFam = ($fam -ne $script:cnFam); $mudouModo = ($mode -ne $script:cnModo)
   $script:cnFam = $fam; $script:cnModo = $mode
   $c = $script:cena
+  # subagentes ativos e a conversa principal nao esta em alerta nem em erro (a ferramenta Agent deixa o principal em
+  # Codando/Pensando ate o subagente acabar; em segundo plano ele pode estar em Sua vez/Ocioso)
+  $nAg = 0; try { $nAg = [int]$v.agentsN } catch { }
+  $querAg = ($nAg -gt 0 -and $fam -ne 'alerta' -and $fam -ne 'erro')
+  if ($nAg -gt 0) { $script:cnAgN = [math]::Min(3, $nAg) }
 
   if ($fam -eq 'off') { if ($c) { Cena-Fim $t }; return }
 
   # 0) depuracao: uma cena em laco
   if ($script:CN_DEBUG -and $script:CENAS[$script:CN_DEBUG]) {
-    if (-not $c) { if ($script:CN_DEBUG -eq 'quadro') { Cena-Tocar 'quadro' $t -Voltas 4 } else { Cena-Tocar $script:CN_DEBUG $t } }
+    if (-not $c) {
+      if ($script:CN_DEBUG -eq 'quadro') { Cena-Tocar 'quadro' $t -Voltas 4 }
+      elseif ($script:CN_DEBUG -eq 'aguardando') { if ($script:cnAgN -lt 1) { $script:cnAgN = 3 }; Cena-Tocar 'aguardando' $t -Laco }
+      else { Cena-Tocar $script:CN_DEBUG $t }
+    }
     return
   }
 
@@ -175,7 +201,8 @@ function Cena-Gatilhos($v, [double]$t) {
   if ($c -and $c.id -eq 'quadro' -and $c.laco) { Cena-Parar $t; return }
 
   # 3) a familia de modo mudou (ex.: chegou um alerta, deu erro, voce mandou um prompt): a cena em curso sai
-  if ($c -and $mudouFam -and $c.id -ne 'aterrissa') {
+  #    (a aguardando sobrevive a ocupado <-> calmo enquanto houver subagentes)
+  if ($c -and $mudouFam -and $c.id -ne 'aterrissa' -and -not ($c.id -eq 'aguardando' -and $querAg)) {
     if ($c.id -eq 'quadro') { Cena-Parar $t } else { Cena-Fim $t; $c = $null }   # o quadro sai girando, o resto some
   }
 
@@ -190,6 +217,13 @@ function Cena-Gatilhos($v, [double]$t) {
 
   # 5) turno terminou: plugue ("feature pronta")
   if ($mudouModo -and $mode -eq 'done') { Cena-Tocar 'plugue' $t; return }
+
+  # 5b) subagentes ativos: aguardando (so comeca sem outra cena: inseto/plugue terminam antes e ela volta)
+  if ($c -and $c.id -eq 'aguardando' -and $c.fase -ne 'sai' -and -not $querAg) { Cena-Parar $t; return }
+  if ($querAg) {
+    if (-not $c) { Cena-Tocar 'aguardando' $t -Laco }
+    $script:cnProxOcioso = 0.0; return   # o rodizio do ocioso nao toca enquanto houver subagentes
+  }
 
   # 6) rodizio no ocioso / sua vez (como a tela vazia do app, mas espacado)
   if ($fam -ne 'calmo' -or $script:rm) { $script:cnProxOcioso = 0.0; return }
@@ -274,6 +308,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'inseto' { if ($camada -eq 'frente') { CN-Inseto $cq $t } }
     'quadro' { if ($camada -eq 'atras') { CN-Quadro $cq $t } }
     'plugue' { if ($camada -eq 'atras') { CN-Plugue $cq $t } }
+    'aguardando' { CN-Aguardando $cq $camada $t }
   }
 }
 
@@ -341,4 +376,39 @@ function CN-Plugue($cq, [double]$t) {
   if ($A -ge 0.55 -and $A -lt 0.8 -and -not $script:rm) {
     U $CN_FAISCA ($x + 3.6) ($y - 0.9) 0.8 0.8; U $CN_FAISCA ($x + 3.8) ($y + 2.6) 0.8 0.8
   }
+}
+
+# Bolinhas de subagente (cor $SUBC) orbitando numa elipse achatada; as de tras (sen < 0) vao na camada 'atras', as da frente
+# na 'frente'. Ampulheta pequena sobre a cabeca (so no expandido). Entra: crescem; sai: voam para dentro do mascote.
+function CN-Aguardando($cq, [string]$camada, [double]$t) {
+  $n = [math]::Max(1, [math]::Min(3, $script:cnAgN))
+  $tc = $cq.tc
+  $esc = 1.0; $voo = 0.0
+  if ($cq.fase -eq 'entra') { $esc = [math]::Max(0.0, [math]::Min(1.0, $cq.a / 0.3)) }
+  elseif ($cq.fase -eq 'sai') { $voo = [math]::Min(1.0, $cq.a / 0.4) }
+  if ($esc -le 0.05 -or $voo -ge 1.0) { return }
+  $cy = -9.0; $rx = 14.0; $ry = 7.0
+  for ($i = 0; $i -lt $n; $i++) {
+    $ang = $(if ($cq.fixo) { 0.6 + $i * 2.0944 } else { $tc * 1.75 + $i * 2.0944 })
+    $sn = [math]::Sin($ang)
+    if (($camada -eq 'atras') -ne ($sn -lt 0)) { continue }
+    $f = 1.0 - $voo
+    $x = [math]::Cos($ang) * $rx * $f; $y = $cy + $sn * $ry * $f
+    $pul = $(if ($cq.fixo) { 0.0 } else { 0.5 + 0.5 * [math]::Sin($tc * 5.0 + $i * 2.1) })
+    $s = (1.7 + 0.5 * $pul) * $esc * (1.0 - 0.6 * $voo)
+    # bolinha em forma de cruz gorda (pixel art)
+    U $SUBC ($x - $s * 0.6) ($y - $s * 0.3) ($s * 1.2) ($s * 0.6)
+    U $SUBC ($x - $s * 0.3) ($y - $s * 0.6) ($s * 0.6) ($s * 1.2)
+  }
+  # ampulheta: so atras do corpo, expandido e fora da saida; vira a cada 2 s (parada no meio com reducao de movimento)
+  if ($camada -ne 'atras' -or $script:compact -or $cq.fase -ne 'laco') { return }
+  $p = $(if ($cq.fixo) { 0.5 } else { ($tc % 2.0) / 2.0 })
+  $hx = -1.5; $hy = -23.0
+  U $CN_VIDRO $hx $hy 3 0.6; U $CN_VIDRO $hx ($hy + 4.4) 3 0.6          # tampas
+  U $CN_VIDRO $hx ($hy + 0.6) 0.5 1.8; U $CN_VIDRO ($hx + 2.5) ($hy + 0.6) 0.5 1.8   # paredes de cima
+  U $CN_VIDRO $hx ($hy + 2.6) 0.5 1.8; U $CN_VIDRO ($hx + 2.5) ($hy + 2.6) 0.5 1.8   # paredes de baixo
+  $alto = 1.6 * (1.0 - $p); $baixo = 1.6 * $p
+  if ($alto -gt 0.1) { U $CN_AREIA ($hx + 0.5) ($hy + 0.6 + (1.6 - $alto)) 2 $alto }
+  if ($baixo -gt 0.1) { U $CN_AREIA ($hx + 0.5) ($hy + 4.4 - $baixo) 2 $baixo }
+  if (-not $cq.fixo -and $p -lt 0.95) { U $CN_AREIA ($hx + 1.2) ($hy + 2.2) 0.6 1.6 }   # fio de areia
 }

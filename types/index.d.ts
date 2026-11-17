@@ -1,4 +1,4 @@
-export type Mode = 'thinking' | 'coding' | 'reading' | 'waiting' | 'idle' | 'done' | 'error'
+export type Mode = 'thinking' | 'coding' | 'reading' | 'waiting' | 'idle' | 'done' | 'error' | 'agents'
 
 export type St = {
   mode: Mode
