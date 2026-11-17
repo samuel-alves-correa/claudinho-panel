@@ -203,7 +203,8 @@ function Cena-Gatilhos($v, [double]$t) {
   # 3) a familia de modo mudou (ex.: chegou um alerta, deu erro, voce mandou um prompt): a cena em curso sai
   #    (a aguardando sobrevive a ocupado <-> calmo enquanto houver subagentes)
   if ($c -and $mudouFam -and $c.id -ne 'aterrissa' -and -not ($c.id -eq 'aguardando' -and $querAg)) {
-    if ($c.id -eq 'quadro') { Cena-Parar $t } else { Cena-Fim $t; $c = $null }   # o quadro sai girando, o resto some
+    # o quadro sai girando; a aguardando pula (bolinhas voam para ele) quando o subagente acaba e ele fica parado; o resto some
+    if ($c.id -eq 'quadro' -or ($c.id -eq 'aguardando' -and $fam -eq 'calmo')) { Cena-Parar $t } else { Cena-Fim $t; $c = $null }
   }
 
   # 4) ferramenta falhou (failAt novo): inseto
