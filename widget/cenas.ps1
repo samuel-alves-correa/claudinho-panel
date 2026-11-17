@@ -39,6 +39,7 @@ $CN_AG_SONO = 25.0
 # cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
 $CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6; fumaca = 0.9 }
+$CN_OKD = '#3a9a63'     # verde escuro (bandeira)
 $CN_LENTE = '#9fd0f5'   # vidro da lupa (aro $CN_AGULHA, cabo $CN_VARA, pegadas $CN_PATA)
 $CN_LAMPF = '#8a7a3a'; $CN_LAMPM = '#c9ad4a'; $CN_LAMPA = '#ffe066'   # lampada fraca, piscando e acesa
 $CN_AGULHA = '#c8c6bf'   # agulha da costura (a linha usa $CN_PINCEL)
@@ -63,6 +64,7 @@ $script:cnModo = ''         # modo visto no quadro anterior
 $script:cnEstQuer = ''      # cena do estado pedida agora ('' = nenhuma)
 $script:cnEstDesde = 0.0    # desde quando ela e pedida
 $script:cnLupaOx = 0.0      # onde a lupa parou (a saida volta dali para o centro)
+$script:cnDoneVez = 0       # Terminou alterna plugue / bandeira
 $script:cnRnd = New-Object System.Random
 # arrasto (preenchido pelos eventos de mouse do widget)
 $script:arrY = 0.0; $script:arrT = 0.0; $script:arrVel = 0.0
@@ -172,6 +174,15 @@ $script:CENAS = @{
       @{ ate = 0.12; lift = -2.5 }
       @{ ate = 0.4; oy = -4.0; armL = -3.0; armR = -3.0; eyY = -15.0 }
       @{ ate = 1.0 }
+    )) }
+  # Terminou (alterna com o plugue): anda para a esquerda com uma bandeirinha verde, finca no chao agachando
+  # (poeira) e comemora; a bandeira tremula e afunda no fim
+  'bandeira' = @{ prio = 1; entra = (CN-Seq @(
+      @{ ate = 0.2; ox = -1.5; wf = 8.0; eyX = 1.0 }
+      @{ ate = 0.35; ox = -3.0; eyX = 1.0 }
+      @{ ate = 0.55; ox = -3.0; pose = 'squash'; lift = -1.5; eyX = 1.0; eyY = -13.0 }
+      @{ ate = 1.8; ox = -3.0; eyes = 'happy'; armL = -2.0 }
+      @{ ate = 2.2; ox = -3.0; eyes = 'happy' }
     )) }
   # ---- cenas do estado (estado = $true): prio 0.5, qualquer outra cena passa por cima; semRm = nao toca com reducao de movimento
   # Codando com Bash: terminal a esquerda, ele digita e le as linhas verdes que sobem; na saida aparece um "$" novo
@@ -373,7 +384,10 @@ function Cena-Gatilhos($v, [double]$t) {
   }
 
   # 5) turno terminou: plugue ("feature pronta")
-  if ($mudouModo -and $mode -eq 'done') { Cena-Tocar 'plugue' $t; return }
+  if ($mudouModo -and $mode -eq 'done') {
+    $script:cnDoneVez = 1 - $script:cnDoneVez
+    Cena-Tocar $(if ($script:cnDoneVez -eq 1) { 'bandeira' } else { 'plugue' }) $t; return
+  }
 
   # 5b) subagentes ativos: chefe ou pescaria, e depois de $CN_AG_SONO s, cochilo (so comeca sem outra cena: inseto/plugue terminam antes e ela volta)
   if ($c -and (CN-EhAg $c.id) -and $c.fase -ne 'sai' -and -not $querAg) { Cena-Parar $t; return }
@@ -490,6 +504,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'lampada' { if ($camada -eq 'frente') { CN-Lampada $cq $t } }
     'lupa' { CN-Lupa $cq $camada }
     'fumaca' { CN-Fumaca $cq $camada }
+    'bandeira' { if ($camada -eq 'frente') { CN-Bandeira $cq $t } }
   }
 }
 
@@ -990,4 +1005,25 @@ function CN-Fumaca($cq, [string]$camada) {
   U $CN_QPE (-12.0) (-6.0) 6.5 5.0                                        # tampa
   $tela = $(if ($cq.fase -eq 'entra' -and ([int][math]::Floor($cq.a * 10)) % 2 -eq 0) { $CN_BUG } else { $CN_BUGD })
   U $tela (-11.4) (-5.4) 5.3 3.8
+}
+
+# ---------- bandeira (Terminou) ----------
+# Mastro na mao direita (x 9,4..10,1 com ox -3, topo em -13) e bandeira para fora (x 10,1..12,5, y -13..-10,6); entra carregada
+# 1,5 acima do chao, acompanhando a mao, e afunda nele aos 0,45 s (cantos a <= 14,8 do centro). Some afundando nos ultimos 0,3 s.
+function CN-Bandeira($cq, [double]$t) {
+  $a = $cq.a
+  if ($a -lt 0.2) { return }                                           # aparece quando ele chega (ox -3)
+  $dy = CN-Lerp @(0.35, 0.45) @(-1.5, 0.0) $a
+  $mx = 12.4 + $cq.k.ox                                                # mastro na mao
+  $topo = -13.0 + $dy + [math]::Max(0.0, $a - 1.9) / 0.3 * 13.0        # no fim afunda
+  if ($topo -ge -0.5) { return }
+  U $CN_QBORDA $mx $topo 0.7 ($dy - $topo)
+  if ($topo -gt -10.6 + $dy) { return }
+  $w = $(if (([int][math]::Floor($t * 6)) % 2 -eq 0 -or $a -lt 0.55) { 0.0 } else { 0.6 })   # tremula
+  U $CN_OK ($mx + 0.7) $topo 2.4 1.2
+  U $CN_OKD ($mx + 0.7) ($topo + 1.2) (2.4 - $w) 1.2
+  if ($a -ge 0.45 -and $a -lt 0.75) {                                  # poeira ao fincar
+    $r = ($a - 0.45) * 4
+    U $CN_FUMACA (8.6 - $r) (-0.8) 0.6 0.6; U $CN_FUMACA (10.8 + $r) (-0.8) 0.6 0.6
+  }
 }
