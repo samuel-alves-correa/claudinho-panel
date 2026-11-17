@@ -1,7 +1,8 @@
 ﻿# Claudinho: notch preto na borda direita da tela (sempre no topo): mascote + linhas de uso (5 h, 7 d, contexto, subagentes).
 # Mouse: passar num item abre o balao dele (~180 ms); clique num item fixa/solta o balao; duplo clique no mascote reduz/expande;
 #   arrastar na vertical muda a posicao; botao direito = menu. A janela nao rouba o foco nem aparece no Alt+Tab.
-# Le <StateDir>\<sessionId>.json (um por sessao, gravados pelo mod), relendo so o que mudou; mostra a sessao mais urgente.
+# Le <StateDir>\<sessionId>.json (um por sessao, gravados pelo mod), relendo so o que mudou; mostra a sessao mais urgente,
+#   ou a fixada na lista SESSOES do balao do mascote (um pedido de permissao/pergunta de outra sessao passa na frente). Um widget so (mutex).
 # Config em %USERPROFILE%\.claude\claudinho-widget.json (top, compact, reduceMotion; o balao fixado nao persiste); PID em %USERPROFILE%\.claude\claudinho-widget.pid.
 # Variaveis de ambiente: CW_REDUCE_MOTION=1 (ou reduceMotion no estado) desliga pulso, giros e pulos do mascote.
 #   Depuracao: CW_PIN=mascot|limits|ctx|sub inicia com o balao daquele item fixado; CW_TOP=<px> forca a posicao vertical;
@@ -9,6 +10,16 @@
 #   CW_CFG=<arquivo> usa outro arquivo de config (testes sem mexer na config do usuario).
 #   Cenas (cenas.ps1): CW_CENAS=0 desliga; CW_CENA=inseto|quadro|plugue repete uma cena em laco.
 param([string]$StateDir = (Join-Path $env:USERPROFILE '.claude\claudinho\state'))
+
+# um widget so por usuario: um segundo (launcher aberto na mao, dois /claudinho on juntos) sai antes de abrir a janela.
+# Espera ate 3 s porque o /claudinho on acabou de encerrar o anterior. CW_NO_PID=1 (testes com outro widget aberto) pula a trava.
+$script:mtx = $null
+if ($env:CW_NO_PID -ne '1') {
+  $script:mtx = New-Object System.Threading.Mutex($false, 'Local\ClaudinhoWidget')
+  $own = $false
+  try { $own = $script:mtx.WaitOne(3000) } catch [System.Threading.AbandonedMutexException] { $own = $true }   # anterior morto a forca
+  if (-not $own) { exit }
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -111,6 +122,8 @@ $BLACKC = [System.Drawing.ColorTranslator]::FromHtml($BLACK)
 
 $script:state = $null; $script:vm = $null; $script:viewVer = 0
 $script:sess = @{}; $script:selKey = ''; $script:liveN = 0; $script:everState = $false; $script:lastPal = $null
+# sessao fixada pelo usuario na lista do balao ('' = segue a mais urgente); lista das vivas e areas clicaveis dela no balao
+$script:selSid = ''; $script:liveList = @(); $script:sessHit = New-Object System.Collections.ArrayList
 $script:ack = @{}; $script:ackVer = 0; $script:ackPending = $false; $script:forceView = $false; $script:lastGc = -999.0
 $script:brushes = @{}
 $script:pens = @{}
@@ -516,6 +529,7 @@ function Scan-State([double]$nowMs) {
   $gc = (($script:sw.Elapsed.TotalSeconds - $script:lastGc) -ge 60)
   if ($gc) { $script:lastGc = $script:sw.Elapsed.TotalSeconds }
   $live = 0; $best = $null; $bestE = $null; $bestR = -1; $bestTs = -1.0
+  $list = New-Object System.Collections.ArrayList; $selE = $null
   foreach ($f in @($script:sess.Keys)) {
     if (-not $seen.ContainsKey($f)) { $script:sess.Remove($f); continue }
     $e = $script:sess[$f]; $o = $e.st
@@ -534,11 +548,24 @@ function Scan-State([double]$nowMs) {
     $live++
     $sid = SidOf $e
     $r = Rank $o $sid
+    [void]$list.Add(@{ e = $e; sid = $sid; r = $r; p = [string]$o.project })
+    if ($script:selSid -and $sid -eq $script:selSid) { $selE = $e }
     if ($r -gt $bestR -or ($r -eq $bestR -and $ts -gt $bestTs)) { $bestR = $r; $bestTs = $ts; $best = $o; $bestE = $e }
   }
+  # sessao fixada: ela e a exibida, menos quando outra pede permissao/pergunta (o alerta ganha ate ser respondido)
+  if ($script:selSid) {
+    if (-not $selE) { $script:selSid = '' }   # fixada encerrou: volta a seguir a mais urgente
+    else {
+      $sr = Rank $selE.st $script:selSid
+      if ($bestR -lt 6 -or $sr -ge 6) { $best = $selE.st; $bestE = $selE; $bestR = $sr }
+    }
+  }
+  # lista do balao: mais urgente primeiro; empate por projeto/id (estavel, nao pula a cada heartbeat)
+  $script:liveList = @($list | Sort-Object @{ e = { $_.r }; Descending = $true }, @{ e = { $_.p } }, @{ e = { $_.sid } })
+  $sig = ($script:liveList | ForEach-Object { '{0}:{1}:{2}:{3}' -f $_.sid, $_.r, $_.e.st.mode, $_.e.st.loud }) -join ','
   $script:state = $best; $script:liveN = $live
   if ($best) { $script:stateSid = SidOf $bestE; if ($best.palette) { $script:lastPal = $best.palette } } else { $script:stateSid = '' }
-  $k = '{0}|{1}|{2}|{3}|{4}' -f $(if ($bestE) { $bestE.path + '|' + $bestE.wt.Ticks } else { '' }), $live, $script:ackVer, $script:everState, $bestR
+  $k = '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $(if ($bestE) { $bestE.path + '|' + $bestE.wt.Ticks } else { '' }), $live, $script:ackVer, $script:everState, $bestR, $script:selSid, $sig
   if ($k -ne $script:selKey) { $script:selKey = $k; return $true }
   $false
 }
@@ -559,7 +586,7 @@ function Update-View([double]$nowMs) {
   $v = @{
     off = $true; mode = 'offline'; loud = $false; name = ''; ncol = $TEXT; shortTxt = ''; scol = $DIM; ring = 'quiet'; col = $TEXT
     rows = (New-Object System.Collections.ArrayList); agents = @(); agentsN = 0; hist = @(); top = @(); lim = @{}
-    warn = ''; doneShow = $false; doneAt = 0.0; nextExp = 0.0; alertKey = ''; summary = ''; moreTxt = ''; rmState = $false
+    warn = ''; doneShow = $false; doneAt = 0.0; nextExp = 0.0; alertKey = ''; summary = ''; sess = @(); rmState = $false
     failAt = 0.0; askKind = ''; tool = ''
   }
   $B = '#d97757'; $D = '#a8553a'
@@ -648,7 +675,20 @@ function Update-View([double]$nowMs) {
       [void]$parts.Add(('{0} sub' -f $v.agentsN))
     }
     $v.summary = $parts.ToArray() -join ' · '
-    if ($script:liveN -gt 1) { $n = $script:liveN - 1; $v.moreTxt = $(if ($n -eq 1) { '+1 sessão' } else { '+{0} sessões' -f $n }) }
+    # varias sessoes vivas: lista no balao do mascote (bolinha na cor do estado, projeto, estado curto)
+    if ($script:liveN -gt 1) {
+      $sl = New-Object System.Collections.ArrayList; $cnt = @{}
+      foreach ($x in $script:liveList) { $p = $x.p; if (-not $p) { $p = 'sessão' }; $cnt[$p] = 1 + [int]$cnt[$p] }
+      foreach ($x in $script:liveList) {
+        $so = $x.e.st; $p = $x.p; if (-not $p) { $p = 'sessão' }
+        if ($cnt[$p] -gt 1) { $p = '{0} · {1}' -f $p, $x.sid.Substring(0, [math]::Min(4, $x.sid.Length)) }   # mesmo projeto em duas sessoes
+        $c = [string]$so.color; if (-not (IsHex $c)) { $c = $TEXT }
+        $sn = [string]$so.short; if (-not $sn) { $sn = [string]$so.name }
+        if (DoneUnacked $so $x.sid) { $sn = 'Terminou'; $c = $GRN }
+        [void]$sl.Add(@{ sid = $x.sid; name = $p; st = $sn; col = $c; cur = ($x.sid -eq $script:stateSid); pin = ($x.sid -eq $script:selSid) })
+      }
+      $v.sess = $sl
+    }
   }
   $script:vm = $v
   Calc-Rm
@@ -728,6 +768,7 @@ function Chips($g, $tops) {
 function Draw-Balloon($g, [string]$bal, [bool]$dr, [double]$nowMs) {
   $script:dr = $dr
   $v = $script:vm; $y = $BTOP
+  $script:sessHit.Clear()
   if ($v.off) {
     Tx $g $v.offTitle $fHead $TEXT $BM $y; $y += $LH_HEAD
     Tx $g (ClipW $g $v.offHint $fSmall $BCW) $fSmall $DIM $BM $y $BCW; $y += $LH_SMALL
@@ -752,9 +793,30 @@ function Draw-Balloon($g, [string]$bal, [bool]$dr, [double]$nowMs) {
       $turn = $(if ($v.turnStart -gt 0) { Dur ($nowMs - $v.turnStart) } else { '—' })
       $sdur = $(if ($v.sessStart -gt 0) { Dur ($nowMs - $v.sessStart) } else { '—' })
       Tx $g ('sessão {0} · turno {1}' -f $sdur, $turn) $fSmall $DIM $BM $y; $y += $LH_BODY
-      if ($v.moreTxt) { Tx $g $v.moreTxt $fSmall $DIM $BM ($y - 2); $y += $LH_SMALL }
       # reduzido: as linhas de uso estao escondidas, entao o resumo delas vem aqui
       if ($script:compact -and $v.summary) { Tx $g (ClipW $g $v.summary $fSmall $BCW) $fSmall $TEXT $BM $y $BCW; $y += $LH_BODY }
+      # sessoes: clique numa fixa a exibicao nela; clique na fixada solta (volta a seguir a mais urgente)
+      if ($v.sess.Count -gt 0) {
+        Sep $g ($y + 2); $y += $LH_SEP
+        $hd = $(if (-not $script:selSid) { 'SESSÕES · A MAIS URGENTE' } elseif ($script:selSid -eq $script:stateSid) { 'SESSÕES · FIXADA' } else { 'SESSÕES · ALERTA NA FRENTE' })
+        Tx $g $hd $fSmall $(if ($hd -like '*ALERTA*') { $AMB } else { $DIM }) $BM $y; $y += $LH_WRAP
+        $shown = 0
+        foreach ($se in $v.sess) {
+          if ($shown -ge 5) { break }
+          if ($script:dr) {
+            if ($se.cur) { $g.FillPath((Br $LINE), (RoundPath ($BM - 6) ($y - 2) ($BCW + 12) 22 6)) }
+            $g.FillEllipse((Br $se.col), [single]$BM, [single]($y + 5), 8, 8)
+            if ($se.pin) { $g.DrawEllipse((Pn $TEXT 1.5), [single]($BM - 3), [single]($y + 2), 14, 14) }   # anel = fixada
+          }
+          $stw = (MW $g $se.st $fSmall) + 4
+          Tx $g $se.st $fSmall $se.col $BM ($y + 1) $BCW $right
+          Tx $g (ClipW $g $se.name $fBody ($BCW - 14 - $stw)) $fBody $(if ($se.cur) { $TEXT } else { $DIM }) ($BM + 14) ($y - 1) ($BCW - 14 - $stw)
+          [void]$script:sessHit.Add(@{ sid = $se.sid; y0 = $y - 3; y1 = $y + 20 })
+          $y += $LH_BODY; $shown++
+        }
+        if ($v.sess.Count -gt 5) { Tx $g ('+{0} sessões' -f ($v.sess.Count - 5)) $fSmall $DIM $BM $y; $y += $LH_SMALL }
+        if ($script:selSid) { Tx $g 'clique na fixada (com anel) para soltar' $fSmall $DIM $BM $y; $y += $LH_SMALL }
+      }
       Sep $g ($y + 2); $y += $LH_SEP
       Tx $g 'ATIVIDADE RECENTE' $fSmall $DIM $BM $y; $y += $LH_WRAP
       if ($v.hist.Count -eq 0) { Tx $g 'nada ainda' $fSmall $DIM $BM $y; $y += $LH_SMALL }
@@ -933,6 +995,20 @@ function Hit-Item([double]$lx, [double]$ly) {
   $null
 }
 
+# linha da lista de sessoes sob o ponto (so com o balao do mascote aberto); coordenadas logicas da janela
+function Hit-Sess([double]$lx, [double]$ly) {
+  $geo = $script:geo
+  if (-not $geo -or -not $geo.open -or [string]$geo.item.bal -ne 'mascot' -or $lx -ge $BWID) { return $null }
+  $by = $ly - $geo.by
+  foreach ($h in $script:sessHit) { if ($by -ge $h.y0 -and $by -lt $h.y1) { return $h } }
+  $null
+}
+# fixa a sessao (ou solta, se ja era a fixada) e redesenha na hora
+function Select-Sess([string]$sid) {
+  $script:selSid = $(if ($script:selSid -eq $sid) { '' } else { $sid })
+  $nowMs = NowMs
+  [void](Scan-State $nowMs); Update-View $nowMs; Rebuild-Items
+}
 function Toggle-Compact { $script:compact = -not $script:compact; $script:balKey = ''; Rebuild-Items; Save-Cfg }
 function Dismiss-Alert { $script:dismissKey = $script:alertKey; $script:alert = $false; $script:hov = ''; $script:hovCand = ''; $script:inval = $true }
 # clique num item: fixa/solta o balao dele; segundo clique rapido no mascote = duplo clique (desfaz o pino e reduz/expande)
@@ -956,8 +1032,12 @@ $form.Add_MouseDown({
     $script:downY = [System.Windows.Forms.Cursor]::Position.Y; $script:topDown = $script:top
     $script:arrY = $script:downY; $script:arrT = $script:sw.Elapsed.TotalSeconds; $script:arrVel = 0.0
     $script:downHit = Hit-Item ($_.X / $script:S) ($_.Y / $script:S)
-  } elseif ($script:alert) { Dismiss-Alert }   # clique no balao de alerta dispensa
-  else { $script:pinned = ''; $script:hov = ''; $script:hovCand = ''; $script:inval = $true }   # clique no balao aberto fecha
+  } else {
+    $hs = Hit-Sess ($_.X / $script:S) ($_.Y / $script:S)
+    if ($hs) { Select-Sess ([string]$hs.sid) }   # clique numa sessao da lista: fixa/solta
+    elseif ($script:alert) { Dismiss-Alert }   # clique no balao de alerta dispensa
+    else { $script:pinned = ''; $script:hov = ''; $script:hovCand = ''; $script:inval = $true }   # clique no balao aberto fecha
+  }
 })
 $form.Add_MouseMove({
   if ($script:down) {
@@ -971,7 +1051,8 @@ $form.Add_MouseMove({
   if ($hit) {
     if ($script:hovCand -ne $hit.k) { $script:hovCand = [string]$hit.k; $script:hovCandAt = $script:sw.Elapsed.TotalSeconds }
     $form.Cursor = [System.Windows.Forms.Cursors]::Hand
-  } else { $form.Cursor = [System.Windows.Forms.Cursors]::Default }
+  } elseif (Hit-Sess ($_.X / $script:S) ($_.Y / $script:S)) { $form.Cursor = [System.Windows.Forms.Cursors]::Hand }
+  else { $form.Cursor = [System.Windows.Forms.Cursors]::Default }
 })
 $form.Add_MouseUp({
   if ($_.Button -eq 'Left' -and $script:down) {
@@ -985,6 +1066,7 @@ $form.Add_MouseUp({
 $form.Add_FormClosing({
   $timer.Stop()
   if ($usePid) { try { if ([System.IO.File]::Exists($PIDF) -and ([System.IO.File]::ReadAllText($PIDF).Trim() -eq [string]$PID)) { [System.IO.File]::Delete($PIDF) } } catch { } }
+  if ($script:mtx) { try { $script:mtx.ReleaseMutex() } catch { } }
 })
 # menu: os rotulos dizem o que vai acontecer no estado atual
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -997,10 +1079,13 @@ $miPin.Add_Click({
 })
 $miRm = New-Object System.Windows.Forms.ToolStripMenuItem 'Reduzir movimento'
 $miRm.Add_Click({ $script:reducePref = -not $script:reducePref; Calc-Rm; $script:inval = $true; Save-Cfg })
+$miFollow = New-Object System.Windows.Forms.ToolStripMenuItem 'Seguir a sessão mais urgente'
+$miFollow.Add_Click({ if ($script:selSid) { Select-Sess $script:selSid } })
 $miClose = New-Object System.Windows.Forms.ToolStripMenuItem 'Fechar'
 $miClose.Add_Click({ $form.Close() })
-$menu.Items.AddRange([System.Windows.Forms.ToolStripItem[]]@($miCompact, $miPin, $miRm, (New-Object System.Windows.Forms.ToolStripSeparator), $miClose))
+$menu.Items.AddRange([System.Windows.Forms.ToolStripItem[]]@($miCompact, $miPin, $miRm, $miFollow, (New-Object System.Windows.Forms.ToolStripSeparator), $miClose))
 $menu.Add_Opening({
+  $miFollow.Visible = [bool]$script:selSid
   $miCompact.Text = $(if ($script:compact) { 'Expandir' } else { 'Reduzir' })
   $miPin.Text = $(if ($script:pinned) { 'Soltar balão' } else { 'Fixar balão' })
   $miRm.Checked = ($script:reducePref -or $script:reduce)

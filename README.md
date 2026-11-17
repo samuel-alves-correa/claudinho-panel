@@ -28,7 +28,7 @@ claudinho-panel/
 Fluxo: **hooks do Claude Code → `register.tsx` atualiza o estado e grava `%USERPROFILE%\.claude\claudinho\state\<sessionId>.json` → `claudinho-widget.ps1` lê a pasta e anima o mascote e as linhas de uso.**
 O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps ao mudar a altura da faixa) é calculada por tempo dentro do widget.
 
-**Várias sessões e sessão encerrada:** cada sessão do Claude Code grava o próprio arquivo e o republica a cada 5 s (o campo `ts` é o heartbeat). O widget considera morta a sessão com `offline: true` (gravado no `session.end`) ou com `ts` há mais de 20 s, e apaga o arquivo depois de 1 h. Entre as vivas, mostra a mais urgente: aguardando em alerta > erro > pensando/codando/lendo > terminou > sua vez > ocioso (empate: `ts` mais recente); as outras aparecem como "+N sessões" no balão do mascote. Sem nenhuma sessão viva, o mascote fica parado de olhos fechados com "Fechado" e o balão diz "Claude Code fechado".
+**Várias sessões e sessão encerrada:** cada sessão do Claude Code grava o próprio arquivo e o republica a cada 5 s (o campo `ts` é o heartbeat). O widget considera morta a sessão com `offline: true` (gravado no `session.end`) ou com `ts` há mais de 20 s, e apaga o arquivo depois de 1 h. Entre as vivas, mostra a mais urgente: aguardando em alerta > erro > pensando/codando/lendo > terminou > sua vez > ocioso (empate: `ts` mais recente). Com mais de uma viva, o balão do mascote ganha a lista **SESSÕES** (bolinha na cor do estado, projeto e estado curto; duas sessões do mesmo projeto ganham os 4 primeiros caracteres do id). **Clicar numa sessão fixa a exibição nela** (a bolinha ganha um anel); clicar de novo, ou "Seguir a sessão mais urgente" no menu, solta. Um pedido de permissão ou pergunta de outra sessão passa na frente da fixada ("ALERTA NA FRENTE") até ser respondido; se a fixada encerrar, o widget volta a seguir a mais urgente. A escolha não é salva. Sem nenhuma sessão viva, o mascote fica parado de olhos fechados com "Fechado" e o balão diz "Claude Code fechado".
 
 ## Qual hook alimenta qual estado
 
@@ -69,7 +69,7 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
    claude --plugin-dir C:\caminho\para\claudinho-panel
    ```
 2. Nenhum caminho precisa ser ajustado: o mod grava o estado em `%USERPROFILE%\.claude\claudinho\state\<sessionId>.json` e o widget lê essa mesma pasta por padrão (`-StateDir` só serve para testes). A pasta é fixa para não mudar quando o plugin é atualizado de versão.
-   O widget guarda posição vertical (`top`), modo reduzido (`compact`) e redução de movimento (`reduceMotion`) em `%USERPROFILE%\.claude\claudinho-widget.json`, e o próprio PID em `%USERPROFILE%\.claude\claudinho-widget.pid` (é por ele que `/claudinho off` fecha só o widget).
+   O widget guarda posição vertical (`top`), modo reduzido (`compact`) e redução de movimento (`reduceMotion`) em `%USERPROFILE%\.claude\claudinho-widget.json`, e o próprio PID em `%USERPROFILE%\.claude\claudinho-widget.pid` (é por ele que `/claudinho off` fecha só o widget). **Um widget só:** o script pega o mutex `Local\ClaudinhoWidget` ao abrir; se outro widget já o tem (launcher aberto na mão, dois `/claudinho on` ao mesmo tempo em sessões diferentes), o novo espera até 3 s e sai sem abrir janela nem mexer no `.pid`. `CW_NO_PID=1` pula a trava (testes com outro widget aberto).
 3. Valide: `claude plugin validate <pasta>` (deve passar sem erros de tipo).
 4. Dentro do Claude Code, rode `/claudinho on`.
 
