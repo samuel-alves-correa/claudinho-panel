@@ -38,7 +38,8 @@ $CN_AG_INICIO = @('chefe', 'pescaria')
 $CN_AG_SONO = 25.0
 # cenas do estado (em laco enquanto o estado pedir): s que o estado precisa durar antes de a cena comecar
 # (evita piscar nas trocas rapidas Codando <-> Pensando entre uma ferramenta e outra)
-$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5 }
+$CN_EST_ESPERA = @{ terminal = 0.6; costura = 0.6; lampada = 1.5; lupa = 0.6 }
+$CN_LENTE = '#9fd0f5'   # vidro da lupa (aro $CN_AGULHA, cabo $CN_VARA, pegadas $CN_PATA)
 $CN_LAMPF = '#8a7a3a'; $CN_LAMPM = '#c9ad4a'; $CN_LAMPA = '#ffe066'   # lampada fraca, piscando e acesa
 $CN_AGULHA = '#c8c6bf'   # agulha da costura (a linha usa $CN_PINCEL)
 $CN_TELA = '#0d1117'   # fundo do terminal (a moldura cinza separa do preto do anel)
@@ -61,6 +62,7 @@ $script:cnFam = ''          # familia de modo vista no quadro anterior
 $script:cnModo = ''         # modo visto no quadro anterior
 $script:cnEstQuer = ''      # cena do estado pedida agora ('' = nenhuma)
 $script:cnEstDesde = 0.0    # desde quando ela e pedida
+$script:cnLupaOx = 0.0      # onde a lupa parou (a saida volta dali para o centro)
 $script:cnRnd = New-Object System.Random
 # arrasto (preenchido pelos eventos de mouse do widget)
 $script:arrY = 0.0; $script:arrT = 0.0; $script:arrVel = 0.0
@@ -213,6 +215,14 @@ $script:CENAS = @{
       @{ ate = 0.35; oy = -1.5; eyes = 'happy'; armR = -2.0 }
       @{ ate = 0.7; eyes = 'happy' }
     )) }
+  # Lendo com Read/Glob/LS: anda de um lado para o outro com a lupa perto do chao, seguindo pegadas (quadro dinamico em CN-LupaKf)
+  'lupa' = @{ prio = 0.5; estado = $true; semRm = $true
+    entra = (CN-Seq @(
+      @{ ate = 0.2; ox = -1.5; wf = 6.0 }
+      @{ ate = 0.4; ox = -3.0; wf = 6.0; eyX = 1.0; eyY = -12.5 }
+    ))
+    laco = (CN-Seq @( @{ ate = 6.0; wf = 6.0; eyY = -12.5 } ))
+    sai = (CN-Seq @( @{ ate = 0.4; wf = 6.0 } )) }
   # puxar a tela (video 15 s -> 19 s): enquanto voce arrasta o widget ele fica pendurado (quadro calculado em CN-Pendurado)
   'pendurado' = @{ prio = 3; laco = (CN-Seq @( @{ ate = 1.0; pose = 'hang' } )) }
   # ao soltar: agacha no impacto, quica e volta
@@ -231,6 +241,7 @@ function CN-EhEst([string]$id) { $d = $script:CENAS[$id]; [bool]($d -and $d.esta
 function CN-Estado($v, [string]$mode, [string]$fam) {
   $tool = [string]$v.tool
   if ($mode -eq 'thinking') { return 'lampada' }
+  if ($mode -eq 'reading' -and ($tool -eq 'Read' -or $tool -eq 'Glob' -or $tool -eq 'LS')) { return 'lupa' }
   if ($mode -eq 'coding' -and $tool -eq 'Bash') { return 'terminal' }
   if ($mode -eq 'coding' -and ($tool -eq 'Edit' -or $tool -eq 'MultiEdit' -or $tool -eq 'NotebookEdit')) { return 'costura' }
   ''
@@ -407,6 +418,7 @@ function Cena-Passo([double]$t) {
     elseif ($c.id -eq 'cochilo' -and $c.fase -eq 'laco') { $k = CN-CochiloKf $k $t $c.t0 }
     elseif ($c.id -eq 'pescaria' -and $c.fase -eq 'laco') { $k = CN-PescaKf $k $t $c.t0 }
     elseif ($c.id -eq 'costura' -and $c.fase -eq 'laco') { $k = CN-CosturaKf $k $al }
+    elseif ($c.id -eq 'lupa' -and $c.fase -ne 'entra') { $k = CN-LupaKf $k $c.fase $al }
     $script:cq = @{ id = $c.id; fase = $c.fase; a = $al; tc = $t - $c.t0; k = $k; fixo = $false }
     return
   }
@@ -460,6 +472,7 @@ function Cena-Props($cq, [string]$camada, [double]$t) {
     'terminal' { if ($camada -eq 'atras') { CN-Terminal $cq $t } }
     'costura' { if ($camada -eq 'frente') { CN-Costura $cq } }
     'lampada' { if ($camada -eq 'frente') { CN-Lampada $cq $t } }
+    'lupa' { CN-Lupa $cq $camada }
   }
 }
 
@@ -897,5 +910,45 @@ function CN-Lampada($cq, [double]$t) {
   if ($cq.fase -eq 'sai') {
     U $CN_LAMPA (-3.4) (-21.5 + $dy) 0.8 0.8; U $CN_LAMPA 2.6 (-21.5 + $dy) 0.8 0.8
     U $CN_LAMPA (-3.6) (-18.6 + $dy) 0.8 0.8; U $CN_LAMPA 2.8 (-18.6 + $dy) 0.8 0.8
+  }
+}
+
+# ---------- lupa (Lendo com Read/Glob/LS) ----------
+# Laco de 6 s: 3 s andando para a direita (ox -3 -> 1) e 3 s para a esquerda (ox 3 -> -1), com a lupa na mao da frente,
+# a 9 unidades do corpo, encostada no chao e varrendo +-1 (aro x ate +-12,7, y -3,4..0; cantos a <= 14,9 do centro).
+# Pegadas no chao (x -11..11); a que passa embaixo da lente aparece aumentada (cortada no vidro).
+function CN-LupaPos([double]$a) {
+  # @(ox, dir)
+  if ($a -lt 3.0) { return @((-3.0 + 4.0 * $a / 3.0), 1) }
+  @((3.0 - 4.0 * ($a - 3.0) / 3.0), -1)
+}
+
+function CN-LupaKf($k, [string]$fase, [double]$a) {
+  $kk = $k.Clone()
+  if ($fase -eq 'sai') { $kk.ox = $script:cnLupaOx * [math]::Max(0.0, 1.0 - $a / 0.4); return $kk }
+  $p = CN-LupaPos $a
+  $kk.ox = $p[0]; $kk.eyX = [double]$p[1]
+  $script:cnLupaOx = $p[0]
+  $kk
+}
+
+function CN-Lupa($cq, [string]$camada) {
+  if ($camada -eq 'atras') {
+    if ($cq.fase -eq 'sai' -and $cq.a -gt 0.25) { return }
+    for ($i = 0; $i -lt 10; $i++) { U $CN_PATA (-11.0 + 2.4 * $i) (-1.2 + 0.6 * ($i % 2)) 1.0 0.6 }
+    return
+  }
+  if ($cq.fase -eq 'sai' -or ($cq.fase -eq 'entra' -and $cq.a -lt 0.2)) { return }
+  if ($cq.fase -eq 'entra') { $ox = $cq.k.ox; $dir = 1 } else { $p = CN-LupaPos $cq.a; $ox = $p[0]; $dir = $p[1] }
+  $xl = $ox + 9.0 * $dir + $(if ($cq.fase -eq 'laco') { [math]::Sin($cq.a * 4.0) } else { 0.0 })
+  CN-Linha ($ox + 10.0 * $dir) (-8.0) $xl (-3.4) $CN_VARA 0.7   # cabo, da mao ate o aro
+  U $CN_AGULHA ($xl - 1.7) (-3.4) 3.4 3.4                    # aro
+  U $CN_LENTE ($xl - 1.1) (-2.8) 2.2 2.2                     # vidro
+  # pegada aumentada embaixo da lente (1,4 x 1, cortada nas bordas do vidro)
+  $i = [int][math]::Round(($xl - 0.5 + 11.0) / 2.4)
+  if ($i -ge 0 -and $i -lt 10) {
+    $px = -11.0 + 2.4 * $i - 0.2
+    $x0 = [math]::Max($px, $xl - 1.1); $x1 = [math]::Min($px + 1.4, $xl + 1.1)
+    if ($x1 - $x0 -ge 0.6) { U $CN_AGUAD $x0 (-1.6 + 0.6 * ($i % 2)) ($x1 - $x0) 1.0 }
   }
 }
