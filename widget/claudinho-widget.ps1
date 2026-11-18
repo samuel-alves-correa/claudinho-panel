@@ -1006,9 +1006,9 @@ if ($hk -ne '0') {
   try {
     $mods = 0; $vk = 0
     foreach ($part in ($hk.ToLower() -split '\+')) {
-      $pt = $part.Trim()
-      switch ($pt) { 'alt' { $mods = $mods -bor 1 } 'ctrl' { $mods = $mods -bor 2 } 'shift' { $mods = $mods -bor 4 } 'win' { $mods = $mods -bor 8 }
-        default { if ($pt.Length -eq 1) { $vk = [int][char]$pt.ToUpper() } } }
+      $hkp = $part.Trim()
+      switch ($hkp) { 'alt' { $mods = $mods -bor 1 } 'ctrl' { $mods = $mods -bor 2 } 'shift' { $mods = $mods -bor 4 } 'win' { $mods = $mods -bor 8 }
+        default { if ($hkp.Length -eq 1) { $vk = [int][char]$hkp.ToUpper() } } }
     }
     if ($vk -ne 0 -and $mods -ne 0) { $form.HkMods = $mods; $form.HkVk = $vk }
   } catch { }
