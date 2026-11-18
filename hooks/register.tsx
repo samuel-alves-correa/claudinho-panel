@@ -80,6 +80,15 @@ const fromSub = (e: unknown): boolean => {
   const r = e as { agentId?: string; agent_id?: string }
   return r.agentId !== undefined || r.agent_id !== undefined
 }
+const agentOf = (e: unknown): string => {
+  const r = e as { agentId?: string; agent_id?: string }
+  return String(r.agentId ?? r.agent_id ?? '')
+}
+// Pedido de permissão pendente: quem pediu (agente, '' = conversa principal) + ferramenta + alvo.
+// Só a chamada que bate com ele sai do alerta no tool.run; ferramentas paralelas já liberadas não.
+let permKey = ''
+const keyOf = (agent: string, tool: string, inp: Record<string, unknown>): string => `${agent}|${tool}|${target(inp)}`
+const isWindows = async ($: Dollar): Promise<boolean> => ((await $.env.get('OS')) || '').toLowerCase().includes('windows')
 // Subagente destravou um pedido de permissão: volta ao que a conversa principal estava fazendo.
 async function resumeMain($: Dollar) {
   const s: St = await read($, st)
@@ -104,10 +113,11 @@ let writeWarned = false
 
 // Publica o estado já "desenhado" num JSON para o widget externo (claudinho-widget.ps1).
 // offline = sessão encerrada (o widget tira a sessão da lista).
-async function publish($: Dollar, offline = false, sidOverride = '') {
+// Retorna true só se gravou (id encerrado ou falha de escrita = false), para o heartbeat não contar o que não saiu.
+async function publish($: Dollar, offline = false, sidOverride = ''): Promise<boolean> {
   const sid = sidOverride || String(await $.session.id())
   if (offline) ended.add(sid)
-  else if (ended.has(sid)) return
+  else if (ended.has(sid)) return false
   const s: St = await read($, st)
   const name = ((await $.store.get('mascot')) as string) || 'coral'
   const m = MASCOTS[name] ?? MASCOTS.coral!
@@ -139,7 +149,7 @@ async function publish($: Dollar, offline = false, sidOverride = '') {
     history: s.history.slice(-6).reverse().map(h => ({ t: h.t, text: h.text })),
   }
   // a sessão pode ter acabado durante os awaits acima
-  if (!offline && ended.has(sid)) return
+  if (!offline && ended.has(sid)) return false
   // $.fs não tem rename/delete: escrita direta, não atômica.
   // $.fs.write cria a pasta se não existir.
   try {
@@ -147,21 +157,26 @@ async function publish($: Dollar, offline = false, sidOverride = '') {
     if (!file) throw new Error('USERPROFILE/HOME não definidos')
     await $.fs.write(file, JSON.stringify(out))
     writeWarned = false
+    return true
   } catch (err) {
     if (!writeWarned) {
       writeWarned = true
       try { $.ui.log(`claudinho: falha ao gravar estado do widget: ${String(err)}`) } catch { /* nunca lança */ }
     }
+    return false
   }
 }
 
 // Atualiza o estado + a linha de status (plano B, sempre visível).
 async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> = {}, loud = false) {
   const now = await $.clock.now()
-  const prev: St = await read($, st)
-  // som só na transição para o alerta (waiting+loud), não a cada atualização do alerta
-  const alertNow = mode === 'waiting' && loud && !(prev.mode === 'waiting' && prev.loud)
-  await update($, st, (s: St) => ({
+  // som só na transição para o alerta (waiting+loud), decidida dentro do update (atômico):
+  // PermissionRequest e Notification quase juntos não tocam duas vezes
+  let alertNow = false
+  if (!(mode === 'waiting' && loud)) permKey = ''
+  await update($, st, (s: St) => {
+    alertNow = mode === 'waiting' && loud && !(s.mode === 'waiting' && s.loud)
+    return {
     ...s, mode, loud, label, labelShort: extra.labelShort ?? label, since: now,
     sessionStart: s.sessionStart || now,
     // waitSince reinicia ao entrar em waiting (ou ao trocar entre loud e nao-loud)
@@ -171,18 +186,23 @@ async function setMode($: Dollar, mode: Mode, label: string, extra: Partial<St> 
     tool: '',
     ...extra,
     flashUntil: mode === 'done' || mode === 'error' ? now + FLASH_MS : 0,
-  }))
+    }
+  })
   await publish($)
   await refreshStatus($)
-  if (alertNow) await playAlert($)
+  if (alertNow) await playAlert($, now)
 }
 
 // Som de alerta (Windows: som do sistema; $.audio.play não toca em Windows). Opt-out: /claudinho som off.
-async function playAlert($: Dollar) {
+// Trava extra: no máximo um som a cada SOUND_GAP_MS, mesmo que o alerta saia e volte para o mesmo pedido.
+const SOUND_GAP_MS = 3_000
+let soundAt = 0
+async function playAlert($: Dollar, now: number) {
   try {
+    if (now - soundAt < SOUND_GAP_MS) return
+    soundAt = now
     if ((await $.store.get('sound')) === 'off') return
-    const os = (await $.env.get('OS')) || ''
-    if (!os.toLowerCase().includes('windows')) return
+    if (!(await isWindows($))) return
     // sem await: o som não atrasa o estado; o sleep deixa o powershell vivo até o som tocar
     void $.process.run(['powershell', '-NoProfile', '-Command',
       '[System.Media.SystemSounds]::Exclamation.Play(); Start-Sleep -Milliseconds 1200']).catch(() => undefined)
@@ -231,6 +251,9 @@ export const register: Register = on => {
   let publishedAt = 0
   // o alerta atual veio de um pedido de permissão de subagente (só esse um subagente pode destravar)
   let subAsk = false
+  let subAskAgent = ''
+  // subagente que pediu a permissão terminou uma ferramenta: só ele destrava
+  const subDone = (e: unknown): boolean => subAsk && agentOf(e) === subAskAgent
 
   const log = (s: St, now: number, text: string) => [...s.history, { t: now, text }].slice(-8)
 
@@ -238,12 +261,11 @@ export const register: Register = on => {
     const now = await $.clock.now()
     await update($, st, () => ({ ...INITIAL, counts: {}, history: [], sessionStart: now, since: now }))
     await $.command.register({ name: 'claudinho', description: 'Widget do Claudinho na borda da tela: on | off | auto on|off | som on|off | mascote <nome> | lista' })
-    await publish($)
-    publishedAt = now
-    // abre o widget sozinho (opt-out: /claudinho auto off ou CW_AUTOSTART=0)
+    if (await publish($)) publishedAt = now
+    // abre o widget sozinho (só Windows; opt-out: /claudinho auto off ou CW_AUTOSTART=0)
     try {
       const envOff = ((await $.env.get('CW_AUTOSTART')) || '').trim() === '0'
-      if (!envOff && (await $.store.get('auto')) !== 'off') await launchWidget($)
+      if (!envOff && (await $.store.get('auto')) !== 'off' && (await isWindows($))) await launchWidget($)
     } catch { /* nunca impede a sessão de iniciar */ }
     cancelTick?.()
     // 1x por segundo; só mexe no estado quando há transição e republica a cada 5 s (heartbeat: `ts`)
@@ -278,8 +300,7 @@ export const register: Register = on => {
         }
       }
       if (dirty || n - publishedAt >= HEARTBEAT_MS) {
-        await publish($)
-        publishedAt = n
+        if (await publish($)) publishedAt = n
         if (dirty) await refreshStatus($)   // linha de status acompanha Agentes <-> Sua vez
       }
     })
@@ -302,11 +323,10 @@ export const register: Register = on => {
         await update($, st, (s: St) => ({ ...INITIAL, counts: {}, history: [], sessionStart: now, since: now, limits: s.limits ?? [] }))
         agentSig = ''
         subAsk = false
-        // se o id novo já valer, publica agora; senão (id ainda o antigo, publish vira no-op)
-        // zera publishedAt para o próximo tick (1 s) publicar o id novo
-        await publish($)
-        const cur = String(await $.session.id())
-        publishedAt = cur === e.sessionId ? 0 : now
+        permKey = ''
+        // se o id novo já valer, publica agora; senão (id ainda o antigo, publish devolve false)
+        // o próximo tick (1 s) tenta de novo, porque publishedAt só anda quando algo foi gravado
+        publishedAt = (await publish($)) ? now : 0
       } catch { /* nunca impede o /clear */ }
     }
     return next(e)
@@ -352,6 +372,7 @@ export const register: Register = on => {
     const asks = ASKS[tool]
     if (asks) {
       subAsk = false
+      permKey = ''
       await setMode($, 'waiting', asks.label, { ask: asks.ask, askKind: asks.kind }, true)
     } else {
       const labelShort = target(rec) || tool
@@ -363,15 +384,18 @@ export const register: Register = on => {
   // tool.run: a chamada foi liberada (permissão concedida) e vai rodar -> sai do alerta de permissão.
   // Perguntas/planos (ASKS) não: a ferramenta roda justamente esperando a sua resposta.
   on('tool.run', async ($, e, next) => {
+    // Só a chamada que pediu a permissão (mesmo agente, ferramenta e alvo) destrava: com ferramentas em
+    // paralelo, as já liberadas também passam por aqui enquanto o pedido segue aberto.
     try {
       const tool = e.tool as string
-      if (!ASKS[tool]) {
+      const rec = e as unknown as Record<string, unknown>
+      if (!ASKS[tool] && permKey && keyOf(agentOf(e), tool, rec) === permKey) {
+        permKey = ''
         if (fromSub(e)) {
           if (subAsk) { subAsk = false; await resumeMain($) }
         } else {
           const s: St = await read($, st)
-          if (s.mode === 'waiting' && s.loud && (s.askKind === 'permissao' || s.askKind === 'aviso')) {
-            const rec = e as unknown as Record<string, unknown>
+          if (s.mode === 'waiting' && s.loud && s.askKind === 'permissao') {
             await setMode($, READ.has(tool) ? 'reading' : 'coding', detail(tool, rec), { labelShort: target(rec) || tool, tool })
           }
         }
@@ -384,7 +408,10 @@ export const register: Register = on => {
   on('classic.PermissionRequest', async ($, e, next) => {
     const inp = ((e as { tool_input?: unknown }).tool_input ?? {}) as Record<string, unknown>
     subAsk = fromSub(e)
+    subAskAgent = agentOf(e)
     await setMode($, 'waiting', `permissão para ${e.tool_name}`, { ask: ellipsis(withTarget(String(e.tool_name), inp), ASK_MAX), askKind: 'permissao' }, true)
+    // depois do setMode (que zera permKey fora do alerta)
+    permKey = keyOf(subAskAgent, String(e.tool_name), inp)
     return next(e)
   })
   // classic.Notification: avisos do Claude (permissão, "aguardando input")
@@ -398,7 +425,7 @@ export const register: Register = on => {
   })
   // classic.PostToolUse: ferramenta terminou -> volta a Pensando (modelo lê o resultado)
   on('classic.PostToolUse', async ($, e, next) => {
-    if (fromSub(e)) { if (subAsk) { subAsk = false; await resumeMain($) }; return next(e) }
+    if (fromSub(e)) { if (subDone(e)) { subAsk = false; permKey = ''; await resumeMain($) }; return next(e) }
     await backToThinking($, e.tool_name)
     return next(e)
   })
@@ -409,7 +436,7 @@ export const register: Register = on => {
     const sub = fromSub(e)
     // failAt só para a conversa principal: o widget transforma em cena do inseto
     await update($, st, (s: St) => ({ ...s, failAt: sub ? s.failAt : now, history: log(s, now, `${sub ? '↳ ' : ''}falhou: ${e.tool_name}`) }))
-    if (sub) { if (subAsk) { subAsk = false; await resumeMain($) }; await publish($); return next(e) }
+    if (sub) { if (subDone(e)) { subAsk = false; permKey = ''; await resumeMain($) }; await publish($); return next(e) }
     await backToThinking($, e.tool_name)
     return next(e)
   })

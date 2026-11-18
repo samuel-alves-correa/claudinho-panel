@@ -42,7 +42,7 @@ O widget só relê um arquivo quando ele muda; toda a animação (30 fps, 60 fps
 | `tool.call` (AskUserQuestion, ExitPlanMode) | 🟡 **Aguardando você** (em alerta) |
 | `classic.PermissionRequest` | 🟡 **Aguardando você** (em alerta: precisa de permissão) |
 | `classic.Notification` | 🟡 **Aguardando você** (em alerta, exceto `idle_prompt`) |
-| `tool.run` | ferramenta liberada para rodar: se estava em 🟡 por permissão/aviso, volta na hora a Codando/Lendo (não vale para AskUserQuestion/ExitPlanMode); também libera o alerta de subagente |
+| `tool.run` | ferramenta liberada para rodar: se é a mesma chamada que pediu a permissão (mesmo agente, ferramenta e alvo), sai do 🟡 na hora e vai para Codando/Lendo; ferramentas paralelas já liberadas não tiram o alerta (não vale para AskUserQuestion/ExitPlanMode nem para avisos) |
 | `classic.PostToolUse` | volta a 🧠 Pensando; mantém Codando/Lendo visível por pelo menos 1,5 s |
 | `classic.PostToolUseFailure` | só entra no histórico (`falhou: <ferramenta>`); o estado volta a 🧠 Pensando como no `PostToolUse` |
 | `classic.Stop` | ✅ **Terminou** por 4 s, depois 💬 **Sua vez**; grava `doneAt`, e o widget mantém o anel verde e "terminou há X" até você passar o mouse ou mandar outro prompt |
