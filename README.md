@@ -1,5 +1,7 @@
 # Claudinho: mod do Claude Code com mascote e status do agente
 
+<p align="center"><img src="assets/claudinho.gif" alt="Claudinho no notch passando por Ocioso, Pensando, Lendo, Codando, Responda, Terminou e Sua vez" width="370"></p>
+
 Mod para o Claude Code que mostra, em tempo real, **o que o agente está fazendo** e **o uso da sessão**.
 O mascote em pixel art (um bichinho laranja visto de lado, no estilo do app do Claude) muda de animação conforme o estado.
 Ele aparece num **notch preto fixo na borda direita da tela** (sempre no topo) e também numa **linha de status** dentro do Claude Code.
@@ -105,6 +107,9 @@ Ou manualmente:
 
 - **Balão por item:** passe o mouse num item (abre após ~180 ms) e aparece à esquerda um balão grafite com seta apontando para ele. **Clique num item fixa o balão dele; outro clique solta.** O pino não é salvo (some ao reiniciar) e, com o Claude Code fechado, o balão só abre ao passar o mouse; clicar no próprio balão aberto ou em qualquer lugar fora do widget fecha. Se o item fixado não existir no momento, aparece o balão do mascote. Mascote: estado, projeto, o que faz/pede, modelo, sessão/turno e atividade recente. 5h e 7d: janelas de uso com barra e "reinicia em…". ctx: barra, tokens, entrada/saída/custo, cache e ferramentas. sub: descrição e modelo de cada subagente. Ao sair da janela, o balão fecha após ~400 ms; o balão acompanha o conteúdo e nunca sai da tela.
 - **Modo reduzido:** duplo clique no mascote (ou "Reduzir" / "Expandir" no menu) para deixar só a bolinha do mascote, sem o nome do estado e sem as linhas de uso (~110 px de altura). A cor do anel continua dizendo o estado, o balão do mascote ganha o resumo `5h · 7d · ctx · sub`, e um **selo com "!"** no anel avisa quando o maior entre 5 h, 7 dias e contexto chega a 75% (âmbar) ou a 90% (vermelho). A escolha fica salva.
+
+  <img src="assets/claudinho-reduzido.gif" alt="Modo reduzido: só a bolinha do mascote, com o balão abrindo em Codando, Aguardando você e Terminou" width="370">
+
 - **Arraste** na vertical (mais de 3 px) para mudar a posição. **Botão direito:** "Reduzir" ou "Expandir", "Fixar balão" ou "Soltar balão", "Reduzir movimento" (marcável), "Monitor" (submenu com as telas; só aparece com 2 ou mais) e "Fechar".
 - **Atalho global Ctrl+Alt+C:** fixa/solta o balão do mascote sem roubar o foco. `CW_HOTKEY=0` desliga; `CW_HOTKEY=ctrl+shift+k` troca (um modificador e uma letra). Se a combinação já estiver em uso por outro programa, o widget segue sem atalho.
 - **Monitor:** a escolha fica salva no campo `monitor` do config (DeviceName, ex.: `\\.\DISPLAY2`); se a tela sumir, volta ao principal. A posição vertical é só limitada à área da nova tela.
