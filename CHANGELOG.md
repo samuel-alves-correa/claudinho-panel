@@ -2,7 +2,7 @@
 
 Versões do Claudinho (`.claude-plugin/plugin.json`). Cada versão tem uma tag `vX.Y.Z` no commit em que foi declarada.
 
-## Não lançado
+## 0.4.1 — 2026-11-20
 
 ### Correções
 - O widget congelava no último estado desenhado (por exemplo, Codando enquanto a sessão estava em Sua vez): o atalho global sobrescrevia a cultura pt-BR e toda formatação de número falhava a cada quadro.
