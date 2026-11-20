@@ -200,7 +200,8 @@ $script:hov = ''; $script:hovCand = ''; $script:hovCandAt = 0.0
 $script:pinned = ''; $script:alert = $false; $script:leaveAt = 0.0; $script:openKey = ''; $script:compact = $false
 $script:balH = 0.0; $script:balKey = ''; $script:geo = $null; $script:shapeKey = ''; $script:boundsKey = ''; $script:inval = $true
 $script:down = $false; $script:moved = $false; $script:clickK = ''; $script:clickT = -9.0; $script:pinBefore = ''
-$script:pt = [System.Globalization.CultureInfo]::GetCultureInfo('pt-BR')
+# constante: um $pt solto no escopo do script (como o do atalho global antes) passa a falhar ali, e nao em todo frame
+Set-Variable -Name pt -Scope Script -Option Constant -Value ([System.Globalization.CultureInfo]::GetCultureInfo('pt-BR'))
 
 # ---------- log: uma linha por mensagem distinta a cada 60 s; arquivo limitado a ~200 KB ----------
 $LOG = Join-Path $env:TEMP 'cw-log.txt'
